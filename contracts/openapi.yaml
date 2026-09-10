@@ -1,0 +1,2634 @@
+openapi: 3.1.1
+info:
+  title: BI-V150 算法服务接口契约（Review）
+  version: 0.1.0-review
+  description: |
+    CPU Web 后端访问 GPU 主机的统一 HTTP 契约。所有路径共用 HTTPS 端口和 GPU_API_KEY。
+    x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
+    x-implementation-status=proposed 表示待实现的设计，当前请求该路径仍返回 404。
+    本文件不启动服务、不发布路由，也不把未部署算法视为可用。
+    YOLO 原生 gRPC 双向流由 x-grpc 指向的 detector.proto 定义；不转换为 JSON POST 接口。
+    VLM 数据结构从本机锁定版本的 vLLM 协议模型导出。上游 schema 中出现的音频、视频等字段
+    不代表本部署支持这些能力；本项目支持文本、图片、业务工具及其 SSE 输出，部署限制见操作描述。
+servers:
+  - url: https://{gpu_host}:{port}
+    description: GPU 目标地址；证书须覆盖此名称。无调用方 IP 或域名白名单。
+    variables:
+      gpu_host:
+        default: localhost
+        description: CPU 后端实际可达的 GPU 地址；localhost 仅用于 GPU 本机联调。
+      port:
+        default: '8443'
+security:
+  - GpuApiKey: []
+tags:
+  - name: Health
+    description: 已实现的网关存活与算法就绪接口。
+  - name: VLM
+    description: 已实现的 Qwen3.5-9B 图文、工具及 SSE 调用。
+  - name: Monitor
+    description: 已对齐口径的监控设计；当前未实现。
+x-grpc:
+  target: '{gpu_host}:{port}'
+  tls: true
+  metadata: 'authorization: Bearer <GPU_API_KEY>'
+  method: /detector.v1.Detector/Detect
+  streaming: bidirectional
+  proto: ../yolov5v70-service/shared/detector_contract/detector.proto
+  review_notes: ./yolo-grpc.md
+  implementation_status: implemented
+x-reserved-interfaces:
+  - {method: POST, path: /rag/v1/embeddings, status: reserved, current_http_status: 404}
+  - {method: POST, path: /rag/v1/rerank, status: reserved, current_http_status: 404}
+  - {method: POST, path: /asr/v1/audio/transcriptions, status: reserved, current_http_status: 404}
+  - {method: POST, path: /tts/v1/audio/speech, status: reserved, current_http_status: 404}
+x-source:
+  repository_commit: 88bb84a
+  gateway: ../gateway/configuration.py
+  server_configuration: ../gateway/config/server.json
+  vlm_configuration: ../vlm_service/config/server.json
+  vlm_version: 0.17.0+corex.4.5.0.rc.11.20260701
+  schema_models:
+    - vllm.entrypoints.openai.chat_completion.protocol.ChatCompletionRequest
+    - vllm.entrypoints.openai.chat_completion.protocol.ChatCompletionResponse
+    - vllm.entrypoints.openai.chat_completion.protocol.ChatCompletionStreamResponse
+    - vllm.entrypoints.openai.engine.protocol.ModelList
+    - vllm.entrypoints.openai.engine.protocol.ErrorResponse
+paths:
+  /health/live:
+    get:
+      operationId: getGatewayLiveness
+      tags: [Health]
+      summary: 网关是否存活
+      x-implementation-status: implemented
+      description: |
+        仅证明 NGINX 能响应，不聚合模型状态。算法停止时仍可返回 200。
+        当前 NGINX 对此固定响应 location 未限定 HTTP 方法；客户端契约使用 GET。
+      responses:
+        '200':
+          description: 网关存活。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GatewayLiveness'}
+              example: {status: ok}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /vlm/health/ready:
+    get:
+      operationId: getVlmReadiness
+      tags: [Health]
+      summary: VLM 引擎是否就绪
+      x-implementation-status: implemented
+      description: 转发内部 /health。成功与引擎不可用的 503 均为空响应体，不是 JSON。
+      responses:
+        '200':
+          description: 引擎健康；空响应体。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '503':
+          description: 上游引擎健康检查失败；空响应体。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+  /yolo/health/ready:
+    get:
+      operationId: getYoloReadiness
+      tags: [Health]
+      summary: YOLO 是否就绪
+      x-implementation-status: implemented
+      responses:
+        '200':
+          description: 检测服务就绪。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/YoloReadiness'}
+              example: {status: ok}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '503':
+          description: 进程可响应，但检测引擎尚未就绪。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/YoloReadiness'}
+              example: {status: unavailable}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+  /vlm/v1/models:
+    get:
+      operationId: listVlmModels
+      tags: [VLM]
+      summary: 获取 VLM 模型列表
+      x-implementation-status: implemented
+      description: 当前服务别名为 qwen3.5-9b；客户端使用别名，不使用 GPU 文件系统模型路径。
+      responses:
+        '200':
+          description: 模型列表。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Vlm_ModelList'}
+              example:
+                object: list
+                data:
+                  - {id: qwen3.5-9b, object: model, created: 1789020000, owned_by: vllm, max_model_len: 8192}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+        default: {$ref: '#/components/responses/UpstreamError'}
+  /vlm/v1/chat/completions:
+    post:
+      operationId: createVlmChatCompletion
+      tags: [VLM]
+      summary: 图文理解、工具调用与流式生成
+      x-implementation-status: implemented
+      description: |
+        stream=false 或省略时返回 JSON；stream=true 时返回 text/event-stream。
+        SSE 每个 data 事件是 ChatCompletionStreamResponse JSON；[DONE] 是结束标记，不是 JSON。
+        可能先发送 role 等空文本片段，工具参数可能跨片段；CPU 后端负责拼接、校验和执行工具。
+        stream_options.include_usage=true 请求最终用量，最终用量事件的 choices 可为空。
+        HTTP 200 后仍可能发生流内错误或断流；必须检查 finish_reason，不能把部分文本当作完整答案。
+        finish_reason=length 表示达到生成上限；错误也可能作为 SSE data 错误对象传递。
+        客户端断开会关闭上游连接；计算何时终止由引擎处理。不自动重试。
+
+        当前部署：qwen3.5-9b、8192 token 上下文、最多两张图片、每张处理像素上限 786432。
+        图片推荐使用 PNG/JPEG/WebP Base64 data URL；客户端限制单文件 8 MiB，网关限制请求体 24 MiB。
+        8 MiB 是项目客户端限制，不是额外的网关单图校验。远程媒体仅允许 media.invalid，
+        不开放任意远程拉取或本地文件；不提供视频、音频输入或直接 PDF 上传。
+        CPU 先读取媒体，PDF 先提取文本或转为页面图片。
+        chat_template_kwargs.enable_thinking=false 是当前 CPU 示例的默认请求选项，
+        不是服务端强制改写。未知参数的处理和跨字段校验仍由锁定的 vLLM 版本决定。
+      x-request-body-limit-bytes: 25165824
+      x-max-active-requests: 4
+      x-upstream-idle-timeout-seconds: 180
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Vlm_ChatCompletionRequest'}
+            examples:
+              text:
+                summary: 非流式文本请求
+                value:
+                  model: qwen3.5-9b
+                  messages: [{role: user, content: 请介绍一下自己}]
+                  max_completion_tokens: 128
+                  temperature: 0
+                  stream: false
+                  chat_template_kwargs: {enable_thinking: false}
+              imageStream:
+                summary: 图片理解与 SSE（有效的 1x1 PNG 示例；业务使用实际图片）
+                value:
+                  model: qwen3.5-9b
+                  messages:
+                    - role: user
+                      content:
+                        - {type: text, text: 请描述这张图片}
+                        - type: image_url
+                          image_url:
+                            url: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC
+                  max_completion_tokens: 128
+                  stream: true
+                  stream_options: {include_usage: true}
+                  chat_template_kwargs: {enable_thinking: false}
+              tool:
+                summary: 只读业务工具请求（业务工具在 CPU 执行）
+                value:
+                  model: qwen3.5-9b
+                  messages: [{role: user, content: 查询订单 DEMO-1001}]
+                  max_completion_tokens: 256
+                  tools:
+                    - type: function
+                      function:
+                        name: get_order_status
+                        description: 按订单号查询状态
+                        parameters:
+                          type: object
+                          properties: {order_id: {type: string}}
+                          required: [order_id]
+                  tool_choice: auto
+                  chat_template_kwargs: {enable_thinking: false}
+      responses:
+        '200':
+          description: 完整 JSON 响应或 SSE 字节流，取决于请求中的 stream。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Vlm_ChatCompletionResponse'}
+              example:
+                id: chatcmpl-example
+                object: chat.completion
+                created: 1789020000
+                model: qwen3.5-9b
+                choices: [{index: 0, message: {role: assistant, content: 你好。}, finish_reason: stop}]
+                usage: {prompt_tokens: 20, completion_tokens: 3, total_tokens: 23}
+            text/event-stream:
+              schema: {type: string, description: SSE 文本流；不是 JSON 数组。}
+              x-event-data-schema: {$ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse'}
+              x-error-event-data-schema: {$ref: '#/components/schemas/Vlm_ErrorResponse'}
+              x-terminal-event-data: '[DONE]'
+              example: |
+                data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1789020000,"model":"qwen3.5-9b","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1789020000,"model":"qwen3.5-9b","choices":[{"index":0,"delta":{"content":"你好。"},"finish_reason":null}]}
+
+                data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1789020000,"model":"qwen3.5-9b","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+                data: {"id":"chatcmpl-example","object":"chat.completion.chunk","created":1789020000,"model":"qwen3.5-9b","choices":[],"usage":{"prompt_tokens":20,"completion_tokens":3,"total_tokens":23}}
+
+                data: [DONE]
+
+        '400': {$ref: '#/components/responses/UpstreamError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/UpstreamError'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/UpstreamError'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '503': {$ref: '#/components/responses/UpstreamError'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+        default: {$ref: '#/components/responses/UpstreamError'}
+  /monitor/v1/overview:
+    get:
+      operationId: getMonitoringOverview
+      tags: [Monitor]
+      summary: '[设计待实现] 已部署服务的状态、显存和最近 60 秒耗时'
+      x-implementation-status: proposed
+      x-current-http-status: 404
+      x-poll-interval-seconds: 5
+      description: |
+        无请求体和查询参数。每 5 秒采样，返回最近一次采样；耗时按最近 60 秒的已有样本计算。
+        仅返回已部署服务；未部署的 RAG/ASR/TTS 等不生成占位记录。同一 name 最多出现一次。
+        进程存活且健康检查通过为 running；已部署但未运行（包括主动停止）或检查失败为 error。
+        仅 running 返回显存与耗时；error 只含 name、status。显存包含服务的推理子进程。
+        MB=1000000 字节，采集源为 MiB 时需换算。采集不到显存返回 null，不以 0 代替。
+        YOLO 统计 GPU 端每帧模型推理耗时，排除排队、预处理、NMS 和网络；当前 batch_size=1。
+        VLM 统计 GPU 端首 token 延迟，包含服务端排队，不包含 CPU 与 GPU 间网络耗时。
+        RAG 统计单次 HTTP 请求在 GPU 主机服务端的完整处理耗时，包含内部排队与处理。
+        avg_ms/p95_ms 均为毫秒，P95 是直方图估算；无样本或不可采集时为 null。
+        启动不足 60 秒使用已有样本；采样失败或数据过期应返回 503，不以旧数据冒充当前状态。
+        具体过期阈值及重启窗口处理见 README 的待 review 细节；本操作当前尚未实现。
+      responses:
+        '200':
+          description: 成功取得监控数据；服务列表中允许包含 error 项。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+            Cache-Control:
+              schema: {type: string, const: no-store}
+              description: 监控快照不缓存。
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MonitoringOverview'}
+              examples:
+                running:
+                  summary: 当前已部署 YOLO 和 VLM（数值仅示意）
+                  value:
+                    sampled_at: '2026-09-10T08:00:00Z'
+                    window_seconds: 60
+                    services:
+                      - name: yolo
+                        status: running
+                        memory_mb: 256.0
+                        latency: {metric: model_inference, avg_ms: 12.4, p95_ms: 18.1}
+                      - name: vlm
+                        status: running
+                        memory_mb: 28000.0
+                        latency: {metric: time_to_first_token, avg_ms: 320.0, p95_ms: 480.0}
+                errorAndIdle:
+                  summary: YOLO 正常但无耗时样本，VLM 异常
+                  value:
+                    sampled_at: '2026-09-10T08:00:05Z'
+                    window_seconds: 60
+                    services:
+                      - name: yolo
+                        status: running
+                        memory_mb: 256.0
+                        latency: {metric: model_inference, avg_ms: null, p95_ms: null}
+                      - {name: vlm, status: error}
+                noDeployment:
+                  summary: 没有部署任何已定义监控口径的算法
+                  value: {sampled_at: '2026-09-10T08:00:00Z', window_seconds: 60, services: []}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '503':
+          description: '[设计] 采样尚未就绪、采集失败或快照过期；不返回旧快照。'
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MonitoringUnavailable'}
+              example: {error: monitor_unavailable}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+components:
+  securitySchemes:
+    GpuApiKey:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: CPU 后端持有的 GPU_API_KEY；不是 JWT，也不使用算法内部 key。值区分大小写。
+  headers:
+    RequestId:
+      description: 网关生成并覆盖调用方同名字段的请求 ID；不保证与 vLLM 响应 id 相同。
+      schema: {type: string, pattern: '^[0-9a-f]{32}$'}
+  responses:
+    Unauthorized:
+      description: |
+        缺失或错误的共享 API Key 时，NGINX 返回 401 HTML。
+        若公开鉴权通过，但网关与 VLM 的内部 key 不一致，上游 401 JSON 也会原样转发。
+      headers:
+        X-Request-ID: {$ref: '#/components/headers/RequestId'}
+      content:
+        text/html:
+          schema: {type: string}
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: {type: string, const: Unauthorized}
+    Forbidden:
+      description: NGINX 方法限制等访问检查失败；当前为 HTML 错误体。
+      headers:
+        X-Request-ID: {$ref: '#/components/headers/RequestId'}
+      content:
+        text/html:
+          schema: {type: string}
+    PayloadTooLarge:
+      description: NGINX 请求体超过当前配置的 24 MiB 限制。
+      headers:
+        X-Request-ID: {$ref: '#/components/headers/RequestId'}
+      content:
+        text/html:
+          schema: {type: string}
+    TooManyRequests:
+      description: NGINX 的 VLM 并发数超过 4，或上游限流。不应自动重试生成请求。
+      headers:
+        X-Request-ID: {$ref: '#/components/headers/RequestId'}
+      content:
+        text/html:
+          schema: {type: string}
+        application/json:
+          schema: {$ref: '#/components/schemas/Vlm_ErrorResponse'}
+    BadGateway:
+      description: 上游未监听、连接失败或响应无效。NGINX HTML 错误体。
+      headers:
+        X-Request-ID: {$ref: '#/components/headers/RequestId'}
+      content:
+        text/html:
+          schema: {type: string}
+    GatewayTimeout:
+      description: 上游等待超时，尚未开始响应时由 NGINX 返回 HTML；已开始的 SSE 可能直接断流。
+      headers:
+        X-Request-ID: {$ref: '#/components/headers/RequestId'}
+      content:
+        text/html:
+          schema: {type: string}
+    UpstreamError:
+      description: |
+        vLLM 返回的非成功状态，通常为 ErrorResponse JSON；未捕获异常也可能为 text/plain。
+        网关保留上游状态与正文。业务层应对错误正文脱敏，避免公开文档、工具参数或内部信息。
+        字段校验错误在本机锁定的 vLLM 中转换为 HTTP 400，不默认采用 FastAPI 的 422 格式。
+      headers:
+        X-Request-ID: {$ref: '#/components/headers/RequestId'}
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Vlm_ErrorResponse'}
+        text/plain:
+          schema: {type: string}
+  schemas:
+    GatewayLiveness:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, const: ok}
+    YoloReadiness:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, enum: [ok, unavailable]}
+    MonitoringOverview:
+      type: object
+      additionalProperties: false
+      required: [sampled_at, window_seconds, services]
+      properties:
+        sampled_at: {type: string, format: date-time, description: UTC 采样时间。}
+        window_seconds: {type: integer, const: 60}
+        services:
+          type: array
+          description: 仅已部署服务，同一 name 最多一项；无部署时为空数组。
+          items:
+            oneOf:
+              - {$ref: '#/components/schemas/RunningService'}
+              - {$ref: '#/components/schemas/ErrorService'}
+    RunningService:
+      type: object
+      additionalProperties: false
+      required: [name, status, memory_mb, latency]
+      properties:
+        name: {type: string, enum: [yolo, vlm, rag]}
+        status: {type: string, const: running}
+        memory_mb:
+          type: [number, 'null']
+          minimum: 0
+          description: 主进程与推理子进程合计显存，十进制 MB；未知为 null。
+        latency: {$ref: '#/components/schemas/Latency'}
+      allOf:
+        - if: {properties: {name: {const: yolo}}}
+          then: {properties: {latency: {properties: {metric: {const: model_inference}}}}}
+        - if: {properties: {name: {const: vlm}}}
+          then: {properties: {latency: {properties: {metric: {const: time_to_first_token}}}}}
+        - if: {properties: {name: {const: rag}}}
+          then: {properties: {latency: {properties: {metric: {const: http_request}}}}}
+    ErrorService:
+      type: object
+      additionalProperties: false
+      required: [name, status]
+      properties:
+        name: {type: string, enum: [yolo, vlm, rag]}
+        status: {type: string, const: error}
+    Latency:
+      type: object
+      additionalProperties: false
+      required: [metric, avg_ms, p95_ms]
+      properties:
+        metric: {type: string, enum: [model_inference, time_to_first_token, http_request]}
+        avg_ms: {type: [number, 'null'], minimum: 0, description: 最近 60 秒平均耗时；无样本或不可采集为 null。}
+        p95_ms: {type: [number, 'null'], minimum: 0, description: 最近 60 秒 P95 耗时估算；无样本或不可估算为 null。}
+    MonitoringUnavailable:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: {type: string, const: monitor_unavailable}
+    # Below: schemas exported from the installed vLLM protocol models; no model is loaded.
+    Vlm_ChatCompletionRequest:
+      additionalProperties: true
+      properties:
+        messages:
+          items:
+            anyOf:
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionDeveloperMessageParam'
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionSystemMessageParam'
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionUserMessageParam'
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionAssistantMessageParam'
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionToolMessageParam'
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionFunctionMessageParam'
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__CustomChatCompletionMessageParam'
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__Message'
+          title: Messages
+          type: array
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Model
+        frequency_penalty:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 0.0
+          title: Frequency Penalty
+        logit_bias:
+          anyOf:
+          - additionalProperties:
+              type: number
+            type: object
+          - type: 'null'
+          default: null
+          title: Logit Bias
+        logprobs:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: false
+          title: Logprobs
+        top_logprobs:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: 0
+          title: Top Logprobs
+        max_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          deprecated: true
+          title: Max Tokens
+        max_completion_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Max Completion Tokens
+        n:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: 1
+          title: N
+        presence_penalty:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: 0.0
+          title: Presence Penalty
+        response_format:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ResponseFormat'
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__StructuralTagResponseFormat'
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__LegacyStructuralTagResponseFormat'
+          - type: 'null'
+          default: null
+          title: Response Format
+        seed:
+          anyOf:
+          - maximum: 9223372036854775807
+            minimum: -9223372036854775808
+            type: integer
+          - type: 'null'
+          default: null
+          title: Seed
+        stop:
+          anyOf:
+          - type: string
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: []
+          title: Stop
+        stream:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: false
+          title: Stream
+        stream_options:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__StreamOptions'
+          - type: 'null'
+          default: null
+        temperature:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Temperature
+        top_p:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Top P
+        tools:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionToolsParam'
+            type: array
+          - type: 'null'
+          default: null
+          title: Tools
+        tool_choice:
+          anyOf:
+          - const: none
+            type: string
+          - const: auto
+            type: string
+          - const: required
+            type: string
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionNamedToolChoiceParam'
+          - type: 'null'
+          default: none
+          title: Tool Choice
+        reasoning_effort:
+          anyOf:
+          - enum:
+            - low
+            - medium
+            - high
+            type: string
+          - type: 'null'
+          default: null
+          title: Reasoning Effort
+        include_reasoning:
+          default: true
+          title: Include Reasoning
+          type: boolean
+        parallel_tool_calls:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          title: Parallel Tool Calls
+        user:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: User
+        use_beam_search:
+          default: false
+          title: Use Beam Search
+          type: boolean
+        top_k:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Top K
+        min_p:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Min P
+        repetition_penalty:
+          anyOf:
+          - type: number
+          - type: 'null'
+          default: null
+          title: Repetition Penalty
+        length_penalty:
+          default: 1.0
+          title: Length Penalty
+          type: number
+        stop_token_ids:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: []
+          title: Stop Token Ids
+        include_stop_str_in_output:
+          default: false
+          title: Include Stop Str In Output
+          type: boolean
+        ignore_eos:
+          default: false
+          title: Ignore Eos
+          type: boolean
+        min_tokens:
+          default: 0
+          title: Min Tokens
+          type: integer
+        skip_special_tokens:
+          default: true
+          title: Skip Special Tokens
+          type: boolean
+        spaces_between_special_tokens:
+          default: true
+          title: Spaces Between Special Tokens
+          type: boolean
+        truncate_prompt_tokens:
+          anyOf:
+          - maximum: 9223372036854775807
+            minimum: -1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Truncate Prompt Tokens
+        prompt_logprobs:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Prompt Logprobs
+        allowed_token_ids:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Allowed Token Ids
+        bad_words:
+          items:
+            type: string
+          title: Bad Words
+          type: array
+        echo:
+          default: false
+          description: If true, the new message will be prepended with the last message if they belong to
+            the same role.
+          title: Echo
+          type: boolean
+        add_generation_prompt:
+          default: true
+          description: If true, the generation prompt will be added to the chat template. This is a parameter
+            used by chat template in tokenizer config of the model.
+          title: Add Generation Prompt
+          type: boolean
+        continue_final_message:
+          default: false
+          description: If this is set, the chat will be formatted so that the final message in the chat is
+            open-ended, without any EOS tokens. The model will continue this message rather than starting
+            a new one. This allows you to "prefill" part of the model's response for it. Cannot be used at
+            the same time as `add_generation_prompt`.
+          title: Continue Final Message
+          type: boolean
+        add_special_tokens:
+          default: false
+          description: If true, special tokens (e.g. BOS) will be added to the prompt on top of what is added
+            by the chat template. For most models, the chat template takes care of adding the special tokens
+            so this should be set to false (as is the default).
+          title: Add Special Tokens
+          type: boolean
+        documents:
+          anyOf:
+          - items:
+              additionalProperties:
+                type: string
+              type: object
+            type: array
+          - type: 'null'
+          default: null
+          description: A list of dicts representing documents that will be accessible to the model if it is
+            performing RAG (retrieval-augmented generation). If the template does not support RAG, this argument
+            will have no effect. We recommend that each document should be a dict containing "title" and "text"
+            keys.
+          title: Documents
+        chat_template:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: A Jinja template to use for this conversion. As of transformers v4.44, default chat
+            template is no longer allowed, so you must provide a chat template if the tokenizer does not define
+            one.
+          title: Chat Template
+        chat_template_kwargs:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          description: Additional keyword args to pass to the template renderer. Will be accessible by the
+            chat template.
+          title: Chat Template Kwargs
+        mm_processor_kwargs:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          description: Additional kwargs to pass to the HF processor.
+          title: Mm Processor Kwargs
+        structured_outputs:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__StructuredOutputsParams'
+          - type: 'null'
+          default: null
+          description: Additional kwargs for structured outputs
+        priority:
+          default: 0
+          description: 'The priority of the request (lower means earlier handling; default: 0). Any priority
+            other than 0 will raise an error if the served model does not use priority scheduling.'
+          title: Priority
+          type: integer
+        request_id:
+          description: The request_id related to this request. If the caller does not set it, a random_uuid
+            will be generated. This id is used through out the inference process and return in response.
+          title: Request Id
+          type: string
+        return_tokens_as_token_ids:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          description: If specified with 'logprobs', tokens are represented  as strings of the form 'token_id:{token_id}'
+            so that tokens that are not JSON-encodable can be identified.
+          title: Return Tokens As Token Ids
+        return_token_ids:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          description: If specified, the result will include token IDs alongside the generated text. In streaming
+            mode, prompt_token_ids is included only in the first chunk, and token_ids contains the delta tokens
+            for each chunk. This is useful for debugging or when you need to map generated text back to input
+            tokens.
+          title: Return Token Ids
+        cache_salt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: If specified, the prefix cache will be salted with the provided string to prevent an
+            attacker to guess prompts in multi-user environments. The salt should be random, protected from
+            access by 3rd parties, and long enough to be unpredictable (e.g., 43 characters base64-encoded,
+            corresponding to 256 bit).
+          title: Cache Salt
+        kv_transfer_params:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          description: KVTransfer parameters used for disaggregated serving.
+          title: Kv Transfer Params
+        vllm_xargs:
+          anyOf:
+          - additionalProperties:
+              anyOf:
+              - type: string
+              - type: integer
+              - type: number
+              - items:
+                  anyOf:
+                  - type: string
+                  - type: integer
+                  - type: number
+                type: array
+            type: object
+          - type: 'null'
+          default: null
+          description: Additional request parameters with (list of) string or numeric values, used by custom
+            extensions.
+          title: Vllm Xargs
+        repetition_detection:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__RepetitionDetectionParams'
+          - type: 'null'
+          default: null
+          description: Parameters for detecting repetitive N-gram patterns in output tokens. If such repetition
+            is detected, generation will be ended early. LLMs can sometimes generate repetitive, unhelpful
+            token patterns, stopping only when they hit the maximum output length (e.g. 'abcdabcdabcd...'
+            or '\emoji \emoji \emoji ...'). This feature can detect such behavior and terminate early, saving
+            time and tokens.
+      required:
+      - messages
+      title: ChatCompletionRequest
+      type: object
+    Vlm_ChatCompletionRequest__Audio:
+      additionalProperties: true
+      description: 'Data about a previous audio response from the model.
+
+        [Learn more](https://platform.openai.com/docs/guides/audio).'
+      properties:
+        id:
+          title: Id
+          type: string
+      required:
+      - id
+      title: Audio
+      type: object
+    Vlm_ChatCompletionRequest__AudioURL:
+      additionalProperties: true
+      properties:
+        url:
+          title: Url
+          type: string
+      required:
+      - url
+      title: AudioURL
+      type: object
+    Vlm_ChatCompletionRequest__Author:
+      properties:
+        role:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__Role'
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Name
+      required:
+      - role
+      title: Author
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionAssistantMessageParam:
+      additionalProperties: true
+      description: Messages sent by the model in response to user messages.
+      properties:
+        role:
+          const: assistant
+          title: Role
+          type: string
+        audio:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__Audio'
+          - type: 'null'
+        content:
+          anyOf:
+          - type: string
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartTextParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartRefusalParam'
+            type: array
+          - type: 'null'
+          title: Content
+        function_call:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__FunctionCall'
+          - type: 'null'
+        name:
+          title: Name
+          type: string
+        refusal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Refusal
+        tool_calls:
+          items:
+            anyOf:
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionMessageFunctionToolCallParam'
+            - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionMessageCustomToolCallParam'
+          title: Tool Calls
+          type: array
+      required:
+      - role
+      title: ChatCompletionAssistantMessageParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionContentPartAudioEmbedsParam:
+      additionalProperties: true
+      properties:
+        audio_embeds:
+          anyOf:
+          - type: string
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Audio Embeds
+        type:
+          const: audio_embeds
+          title: Type
+          type: string
+        uuid:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uuid
+      required:
+      - type
+      title: ChatCompletionContentPartAudioEmbedsParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionContentPartAudioParam:
+      additionalProperties: true
+      properties:
+        audio_url:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__AudioURL'
+        type:
+          const: audio_url
+          title: Type
+          type: string
+      required:
+      - audio_url
+      - type
+      title: ChatCompletionContentPartAudioParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionContentPartImageEmbedsParam:
+      additionalProperties: true
+      properties:
+        image_embeds:
+          anyOf:
+          - type: string
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Image Embeds
+        type:
+          const: image_embeds
+          title: Type
+          type: string
+        uuid:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uuid
+      required:
+      - type
+      title: ChatCompletionContentPartImageEmbedsParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionContentPartImageParam:
+      additionalProperties: true
+      description: Learn about [image inputs](https://platform.openai.com/docs/guides/vision).
+      properties:
+        image_url:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ImageURL'
+        type:
+          const: image_url
+          title: Type
+          type: string
+      required:
+      - image_url
+      - type
+      title: ChatCompletionContentPartImageParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionContentPartInputAudioParam:
+      additionalProperties: true
+      description: Learn about [audio inputs](https://platform.openai.com/docs/guides/audio).
+      properties:
+        input_audio:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__InputAudio'
+        type:
+          const: input_audio
+          title: Type
+          type: string
+      required:
+      - input_audio
+      - type
+      title: ChatCompletionContentPartInputAudioParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionContentPartRefusalParam:
+      additionalProperties: true
+      properties:
+        refusal:
+          title: Refusal
+          type: string
+        type:
+          const: refusal
+          title: Type
+          type: string
+      required:
+      - refusal
+      - type
+      title: ChatCompletionContentPartRefusalParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionContentPartTextParam:
+      additionalProperties: true
+      description: Learn about [text inputs](https://platform.openai.com/docs/guides/text-generation).
+      properties:
+        text:
+          title: Text
+          type: string
+        type:
+          const: text
+          title: Type
+          type: string
+      required:
+      - text
+      - type
+      title: ChatCompletionContentPartTextParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionContentPartVideoParam:
+      additionalProperties: true
+      properties:
+        video_url:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__VideoURL'
+        type:
+          const: video_url
+          title: Type
+          type: string
+      required:
+      - video_url
+      - type
+      title: ChatCompletionContentPartVideoParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionDeveloperMessageParam:
+      additionalProperties: true
+      description: 'Developer-provided instructions that the model should follow, regardless of
+
+        messages sent by the user. With o1 models and newer, `developer` messages
+
+        replace the previous `system` messages.'
+      properties:
+        content:
+          anyOf:
+          - type: string
+          - items:
+              $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartTextParam'
+            type: array
+          title: Content
+        role:
+          const: developer
+          title: Role
+          type: string
+        name:
+          title: Name
+          type: string
+      required:
+      - content
+      - role
+      title: ChatCompletionDeveloperMessageParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionFunctionMessageParam:
+      additionalProperties: true
+      properties:
+        content:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content
+        name:
+          title: Name
+          type: string
+        role:
+          const: function
+          title: Role
+          type: string
+      required:
+      - content
+      - name
+      - role
+      title: ChatCompletionFunctionMessageParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionFunctionToolParam:
+      additionalProperties: true
+      description: A function tool that can be used to generate a response.
+      properties:
+        function:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__openai__types__shared_params__function_definition__FunctionDefinition'
+        type:
+          const: function
+          title: Type
+          type: string
+      required:
+      - function
+      - type
+      title: ChatCompletionFunctionToolParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionMessageCustomToolCallParam:
+      additionalProperties: true
+      description: A call to a custom tool created by the model.
+      properties:
+        id:
+          title: Id
+          type: string
+        custom:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__Custom'
+        type:
+          const: custom
+          title: Type
+          type: string
+      required:
+      - id
+      - custom
+      - type
+      title: ChatCompletionMessageCustomToolCallParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionMessageFunctionToolCallParam:
+      additionalProperties: true
+      description: A call to a function tool created by the model.
+      properties:
+        id:
+          title: Id
+          type: string
+        function:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__Function'
+        type:
+          const: function
+          title: Type
+          type: string
+      required:
+      - id
+      - function
+      - type
+      title: ChatCompletionMessageFunctionToolCallParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionNamedFunction:
+      additionalProperties: true
+      properties:
+        name:
+          title: Name
+          type: string
+      required:
+      - name
+      title: ChatCompletionNamedFunction
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionNamedToolChoiceParam:
+      additionalProperties: true
+      properties:
+        function:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionNamedFunction'
+        type:
+          const: function
+          default: function
+          title: Type
+          type: string
+      required:
+      - function
+      title: ChatCompletionNamedToolChoiceParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionSystemMessageParam:
+      additionalProperties: true
+      description: 'Developer-provided instructions that the model should follow, regardless of
+
+        messages sent by the user. With o1 models and newer, use `developer` messages
+
+        for this purpose instead.'
+      properties:
+        content:
+          anyOf:
+          - type: string
+          - items:
+              $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartTextParam'
+            type: array
+          title: Content
+        role:
+          const: system
+          title: Role
+          type: string
+        name:
+          title: Name
+          type: string
+      required:
+      - content
+      - role
+      title: ChatCompletionSystemMessageParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionToolMessageParam:
+      additionalProperties: true
+      properties:
+        content:
+          anyOf:
+          - type: string
+          - items:
+              $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartTextParam'
+            type: array
+          title: Content
+        role:
+          const: tool
+          title: Role
+          type: string
+        tool_call_id:
+          title: Tool Call Id
+          type: string
+      required:
+      - content
+      - role
+      - tool_call_id
+      title: ChatCompletionToolMessageParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionToolsParam:
+      additionalProperties: true
+      properties:
+        type:
+          const: function
+          default: function
+          title: Type
+          type: string
+        function:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__vllm__entrypoints__openai__engine__protocol__FunctionDefinition'
+      required:
+      - function
+      title: ChatCompletionToolsParam
+      type: object
+    Vlm_ChatCompletionRequest__ChatCompletionUserMessageParam:
+      additionalProperties: true
+      description: 'Messages sent by an end user, containing prompts or additional context
+
+        information.'
+      properties:
+        content:
+          anyOf:
+          - type: string
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartTextParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartImageParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartInputAudioParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__File'
+            type: array
+          title: Content
+        role:
+          const: user
+          title: Role
+          type: string
+        name:
+          title: Name
+          type: string
+      required:
+      - content
+      - role
+      title: ChatCompletionUserMessageParam
+      type: object
+    Vlm_ChatCompletionRequest__Content:
+      properties: {}
+      title: Content
+      type: object
+    Vlm_ChatCompletionRequest__Custom:
+      additionalProperties: true
+      description: The custom tool that the model called.
+      properties:
+        input:
+          title: Input
+          type: string
+        name:
+          title: Name
+          type: string
+      required:
+      - input
+      - name
+      title: Custom
+      type: object
+    Vlm_ChatCompletionRequest__CustomChatCompletionContentSimpleAudioParam:
+      additionalProperties: true
+      description: "A simpler version of the param that only accepts a plain audio_url.\n\nExample:\n{\n \
+        \   \"audio_url\": \"https://example.com/audio.mp3\"\n}"
+      properties:
+        audio_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Audio Url
+      title: CustomChatCompletionContentSimpleAudioParam
+      type: object
+    Vlm_ChatCompletionRequest__CustomChatCompletionContentSimpleImageParam:
+      additionalProperties: true
+      description: "A simpler version of the param that only accepts a plain image_url.\nThis is supported\
+        \ by OpenAI API, although it is not documented.\n\nExample:\n{\n    \"image_url\": \"https://example.com/image.jpg\"\
+        \n}"
+      properties:
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+        uuid:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uuid
+      title: CustomChatCompletionContentSimpleImageParam
+      type: object
+    Vlm_ChatCompletionRequest__CustomChatCompletionContentSimpleVideoParam:
+      additionalProperties: true
+      description: "A simpler version of the param that only accepts a plain audio_url.\n\nExample:\n{\n \
+        \   \"video_url\": \"https://example.com/video.mp4\"\n}"
+      properties:
+        video_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Video Url
+        uuid:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Uuid
+      title: CustomChatCompletionContentSimpleVideoParam
+      type: object
+    Vlm_ChatCompletionRequest__CustomChatCompletionMessageParam:
+      additionalProperties: true
+      description: Enables custom roles in the Chat Completion API.
+      properties:
+        role:
+          title: Role
+          type: string
+        content:
+          anyOf:
+          - type: string
+          - items:
+              anyOf:
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartTextParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartImageParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartInputAudioParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__File'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartAudioParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartVideoParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartRefusalParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__CustomChatCompletionContentSimpleImageParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartImageEmbedsParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionContentPartAudioEmbedsParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__CustomChatCompletionContentSimpleAudioParam'
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__CustomChatCompletionContentSimpleVideoParam'
+              - type: string
+              - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__CustomThinkCompletionContentParam'
+            type: array
+          title: Content
+        name:
+          title: Name
+          type: string
+        tool_call_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tool Call Id
+        tool_calls:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionMessageFunctionToolCallParam'
+            type: array
+          - type: 'null'
+          title: Tool Calls
+        reasoning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reasoning
+        tools:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Vlm_ChatCompletionRequest__ChatCompletionFunctionToolParam'
+            type: array
+          - type: 'null'
+          title: Tools
+      required:
+      - role
+      title: CustomChatCompletionMessageParam
+      type: object
+    Vlm_ChatCompletionRequest__CustomThinkCompletionContentParam:
+      additionalProperties: true
+      description: "A Think Completion Content Param that accepts a plain text and a boolean.\n\nExample:\n\
+        {\n    \"thinking\": \"I am thinking about the answer\",\n    \"closed\": True,\n    \"type\": \"\
+        thinking\"\n}"
+      properties:
+        thinking:
+          title: Thinking
+          type: string
+        closed:
+          title: Closed
+          type: boolean
+        type:
+          const: thinking
+          title: Type
+          type: string
+      required:
+      - thinking
+      - type
+      title: CustomThinkCompletionContentParam
+      type: object
+    Vlm_ChatCompletionRequest__File:
+      additionalProperties: true
+      description: Learn about [file inputs](https://platform.openai.com/docs/guides/text) for text generation.
+      properties:
+        file:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__FileFile'
+        type:
+          const: file
+          title: Type
+          type: string
+      required:
+      - file
+      - type
+      title: File
+      type: object
+    Vlm_ChatCompletionRequest__FileFile:
+      additionalProperties: true
+      properties:
+        file_data:
+          title: File Data
+          type: string
+        file_id:
+          title: File Id
+          type: string
+        filename:
+          title: Filename
+          type: string
+      title: FileFile
+      type: object
+    Vlm_ChatCompletionRequest__Function:
+      additionalProperties: true
+      description: The function that the model called.
+      properties:
+        arguments:
+          title: Arguments
+          type: string
+        name:
+          title: Name
+          type: string
+      required:
+      - arguments
+      - name
+      title: Function
+      type: object
+    Vlm_ChatCompletionRequest__FunctionCall:
+      additionalProperties: true
+      description: 'Deprecated and replaced by `tool_calls`.
+
+
+        The name and arguments of a function that should be called, as generated by the model.'
+      properties:
+        arguments:
+          title: Arguments
+          type: string
+        name:
+          title: Name
+          type: string
+      required:
+      - arguments
+      - name
+      title: FunctionCall
+      type: object
+    Vlm_ChatCompletionRequest__ImageURL:
+      additionalProperties: true
+      properties:
+        url:
+          title: Url
+          type: string
+        detail:
+          enum:
+          - auto
+          - low
+          - high
+          title: Detail
+          type: string
+      required:
+      - url
+      title: ImageURL
+      type: object
+    Vlm_ChatCompletionRequest__InputAudio:
+      additionalProperties: true
+      properties:
+        data:
+          title: Data
+          type: string
+        format:
+          enum:
+          - wav
+          - mp3
+          title: Format
+          type: string
+      required:
+      - data
+      - format
+      title: InputAudio
+      type: object
+    Vlm_ChatCompletionRequest__JsonSchemaResponseFormat:
+      additionalProperties: true
+      properties:
+        name:
+          title: Name
+          type: string
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Description
+        schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Schema
+        strict:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          title: Strict
+      required:
+      - name
+      title: JsonSchemaResponseFormat
+      type: object
+    Vlm_ChatCompletionRequest__LegacyStructuralTag:
+      additionalProperties: true
+      properties:
+        begin:
+          title: Begin
+          type: string
+        schema:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Schema
+        end:
+          title: End
+          type: string
+      required:
+      - begin
+      - end
+      title: LegacyStructuralTag
+      type: object
+    Vlm_ChatCompletionRequest__LegacyStructuralTagResponseFormat:
+      additionalProperties: true
+      properties:
+        type:
+          const: structural_tag
+          title: Type
+          type: string
+        structures:
+          items:
+            $ref: '#/components/schemas/Vlm_ChatCompletionRequest__LegacyStructuralTag'
+          title: Structures
+          type: array
+        triggers:
+          items:
+            type: string
+          title: Triggers
+          type: array
+      required:
+      - type
+      - structures
+      - triggers
+      title: LegacyStructuralTagResponseFormat
+      type: object
+    Vlm_ChatCompletionRequest__Message:
+      properties:
+        author:
+          $ref: '#/components/schemas/Vlm_ChatCompletionRequest__Author'
+        content:
+          items:
+            $ref: '#/components/schemas/Vlm_ChatCompletionRequest__Content'
+          title: Content
+          type: array
+        channel:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Channel
+        recipient:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Recipient
+        content_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Content Type
+      required:
+      - author
+      title: Message
+      type: object
+    Vlm_ChatCompletionRequest__RepetitionDetectionParams:
+      description: Parameters for detecting repetitive N-gram patterns in output tokens.
+      properties:
+        max_pattern_size:
+          default: 0
+          title: Max Pattern Size
+          type: integer
+        min_pattern_size:
+          default: 0
+          title: Min Pattern Size
+          type: integer
+        min_count:
+          default: 0
+          title: Min Count
+          type: integer
+      title: RepetitionDetectionParams
+      type: object
+    Vlm_ChatCompletionRequest__ResponseFormat:
+      additionalProperties: true
+      properties:
+        type:
+          enum:
+          - text
+          - json_object
+          - json_schema
+          title: Type
+          type: string
+        json_schema:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionRequest__JsonSchemaResponseFormat'
+          - type: 'null'
+          default: null
+      required:
+      - type
+      title: ResponseFormat
+      type: object
+    Vlm_ChatCompletionRequest__Role:
+      description: The role of a message author (mirrors ``chat::Role``).
+      enum:
+      - user
+      - assistant
+      - system
+      - developer
+      - tool
+      title: Role
+      type: string
+    Vlm_ChatCompletionRequest__StreamOptions:
+      additionalProperties: true
+      properties:
+        include_usage:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: true
+          title: Include Usage
+        continuous_usage_stats:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: false
+          title: Continuous Usage Stats
+      title: StreamOptions
+      type: object
+    Vlm_ChatCompletionRequest__StructuralTagResponseFormat:
+      additionalProperties: true
+      properties:
+        type:
+          const: structural_tag
+          title: Type
+          type: string
+        format:
+          title: Format
+      required:
+      - type
+      - format
+      title: StructuralTagResponseFormat
+      type: object
+    Vlm_ChatCompletionRequest__StructuredOutputsParams:
+      properties:
+        json:
+          anyOf:
+          - type: string
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Json
+        regex:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Regex
+        choice:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          default: null
+          title: Choice
+        grammar:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Grammar
+        json_object:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          title: Json Object
+        disable_fallback:
+          default: false
+          title: Disable Fallback
+          type: boolean
+        disable_any_whitespace:
+          default: false
+          title: Disable Any Whitespace
+          type: boolean
+        disable_additional_properties:
+          default: false
+          title: Disable Additional Properties
+          type: boolean
+        whitespace_pattern:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Whitespace Pattern
+        structural_tag:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Structural Tag
+        _backend:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Backend
+        _backend_was_auto:
+          default: false
+          title: Backend Was Auto
+          type: boolean
+      title: StructuredOutputsParams
+      type: object
+    Vlm_ChatCompletionRequest__VideoURL:
+      additionalProperties: true
+      properties:
+        url:
+          title: Url
+          type: string
+      required:
+      - url
+      title: VideoURL
+      type: object
+    Vlm_ChatCompletionRequest__openai__types__shared_params__function_definition__FunctionDefinition:
+      additionalProperties: true
+      properties:
+        name:
+          title: Name
+          type: string
+        description:
+          title: Description
+          type: string
+        parameters:
+          additionalProperties: true
+          title: Parameters
+          type: object
+        strict:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Strict
+      required:
+      - name
+      title: FunctionDefinition
+      type: object
+    Vlm_ChatCompletionRequest__vllm__entrypoints__openai__engine__protocol__FunctionDefinition:
+      additionalProperties: true
+      properties:
+        name:
+          title: Name
+          type: string
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Description
+        parameters:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          title: Parameters
+      required:
+      - name
+      title: FunctionDefinition
+      type: object
+    Vlm_ChatCompletionResponse:
+      additionalProperties: true
+      properties:
+        id:
+          title: Id
+          type: string
+        object:
+          const: chat.completion
+          default: chat.completion
+          title: Object
+          type: string
+        created:
+          title: Created
+          type: integer
+        model:
+          title: Model
+          type: string
+        choices:
+          items:
+            $ref: '#/components/schemas/Vlm_ChatCompletionResponse__ChatCompletionResponseChoice'
+          title: Choices
+          type: array
+        service_tier:
+          anyOf:
+          - enum:
+            - auto
+            - default
+            - flex
+            - scale
+            - priority
+            type: string
+          - type: 'null'
+          default: null
+          title: Service Tier
+        system_fingerprint:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: System Fingerprint
+        usage:
+          $ref: '#/components/schemas/Vlm_ChatCompletionResponse__UsageInfo'
+        prompt_logprobs:
+          anyOf:
+          - items:
+              anyOf:
+              - additionalProperties:
+                  $ref: '#/components/schemas/Vlm_ChatCompletionResponse__Logprob'
+                type: object
+              - type: 'null'
+            type: array
+          - type: 'null'
+          default: null
+          title: Prompt Logprobs
+        prompt_token_ids:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Prompt Token Ids
+        kv_transfer_params:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          description: KVTransfer parameters.
+          title: Kv Transfer Params
+      required:
+      - model
+      - choices
+      - usage
+      title: ChatCompletionResponse
+      type: object
+    Vlm_ChatCompletionResponse__Annotation:
+      additionalProperties: true
+      description: A URL citation when using web search.
+      properties:
+        type:
+          const: url_citation
+          title: Type
+          type: string
+        url_citation:
+          $ref: '#/components/schemas/Vlm_ChatCompletionResponse__AnnotationURLCitation'
+      required:
+      - type
+      - url_citation
+      title: Annotation
+      type: object
+    Vlm_ChatCompletionResponse__AnnotationURLCitation:
+      additionalProperties: true
+      description: A URL citation when using web search.
+      properties:
+        end_index:
+          title: End Index
+          type: integer
+        start_index:
+          title: Start Index
+          type: integer
+        title:
+          title: Title
+          type: string
+        url:
+          title: Url
+          type: string
+      required:
+      - end_index
+      - start_index
+      - title
+      - url
+      title: AnnotationURLCitation
+      type: object
+    Vlm_ChatCompletionResponse__ChatCompletionAudio:
+      additionalProperties: true
+      description: 'If the audio output modality is requested, this object contains data
+
+        about the audio response from the model. [Learn more](https://platform.openai.com/docs/guides/audio).'
+      properties:
+        id:
+          title: Id
+          type: string
+        data:
+          title: Data
+          type: string
+        expires_at:
+          title: Expires At
+          type: integer
+        transcript:
+          title: Transcript
+          type: string
+      required:
+      - id
+      - data
+      - expires_at
+      - transcript
+      title: ChatCompletionAudio
+      type: object
+    Vlm_ChatCompletionResponse__ChatCompletionLogProb:
+      additionalProperties: true
+      properties:
+        token:
+          title: Token
+          type: string
+        logprob:
+          default: -9999.0
+          title: Logprob
+          type: number
+        bytes:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Bytes
+      required:
+      - token
+      title: ChatCompletionLogProb
+      type: object
+    Vlm_ChatCompletionResponse__ChatCompletionLogProbs:
+      additionalProperties: true
+      properties:
+        content:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Vlm_ChatCompletionResponse__ChatCompletionLogProbsContent'
+            type: array
+          - type: 'null'
+          default: null
+          title: Content
+      title: ChatCompletionLogProbs
+      type: object
+    Vlm_ChatCompletionResponse__ChatCompletionLogProbsContent:
+      additionalProperties: true
+      properties:
+        token:
+          title: Token
+          type: string
+        logprob:
+          default: -9999.0
+          title: Logprob
+          type: number
+        bytes:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Bytes
+        top_logprobs:
+          items:
+            $ref: '#/components/schemas/Vlm_ChatCompletionResponse__ChatCompletionLogProb'
+          title: Top Logprobs
+          type: array
+      required:
+      - token
+      title: ChatCompletionLogProbsContent
+      type: object
+    Vlm_ChatCompletionResponse__ChatCompletionResponseChoice:
+      additionalProperties: true
+      properties:
+        index:
+          title: Index
+          type: integer
+        message:
+          $ref: '#/components/schemas/Vlm_ChatCompletionResponse__ChatMessage'
+        logprobs:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionResponse__ChatCompletionLogProbs'
+          - type: 'null'
+          default: null
+        finish_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: stop
+          title: Finish Reason
+        stop_reason:
+          anyOf:
+          - type: integer
+          - type: string
+          - type: 'null'
+          default: null
+          title: Stop Reason
+        token_ids:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Token Ids
+      required:
+      - index
+      - message
+      title: ChatCompletionResponseChoice
+      type: object
+    Vlm_ChatCompletionResponse__ChatMessage:
+      additionalProperties: true
+      properties:
+        role:
+          title: Role
+          type: string
+        content:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Content
+        refusal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Refusal
+        annotations:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionResponse__Annotation'
+          - type: 'null'
+          default: null
+        audio:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionResponse__ChatCompletionAudio'
+          - type: 'null'
+          default: null
+        function_call:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionResponse__FunctionCall'
+          - type: 'null'
+          default: null
+        tool_calls:
+          items:
+            $ref: '#/components/schemas/Vlm_ChatCompletionResponse__ToolCall'
+          title: Tool Calls
+          type: array
+        reasoning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Reasoning
+      required:
+      - role
+      title: ChatMessage
+      type: object
+    Vlm_ChatCompletionResponse__FunctionCall:
+      additionalProperties: true
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Id
+        name:
+          title: Name
+          type: string
+        arguments:
+          title: Arguments
+          type: string
+      required:
+      - name
+      - arguments
+      title: FunctionCall
+      type: object
+    Vlm_ChatCompletionResponse__Logprob:
+      properties:
+        logprob:
+          title: Logprob
+          type: number
+        rank:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Rank
+        decoded_token:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Decoded Token
+      required:
+      - logprob
+      title: Logprob
+      type: object
+    Vlm_ChatCompletionResponse__PromptTokenUsageInfo:
+      additionalProperties: true
+      properties:
+        cached_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Cached Tokens
+      title: PromptTokenUsageInfo
+      type: object
+    Vlm_ChatCompletionResponse__ToolCall:
+      additionalProperties: true
+      properties:
+        id:
+          title: Id
+          type: string
+        type:
+          const: function
+          default: function
+          title: Type
+          type: string
+        function:
+          $ref: '#/components/schemas/Vlm_ChatCompletionResponse__FunctionCall'
+      required:
+      - function
+      title: ToolCall
+      type: object
+    Vlm_ChatCompletionResponse__UsageInfo:
+      additionalProperties: true
+      properties:
+        prompt_tokens:
+          default: 0
+          title: Prompt Tokens
+          type: integer
+        total_tokens:
+          default: 0
+          title: Total Tokens
+          type: integer
+        completion_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: 0
+          title: Completion Tokens
+        prompt_tokens_details:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionResponse__PromptTokenUsageInfo'
+          - type: 'null'
+          default: null
+      title: UsageInfo
+      type: object
+    Vlm_ChatCompletionStreamResponse:
+      additionalProperties: true
+      properties:
+        id:
+          title: Id
+          type: string
+        object:
+          const: chat.completion.chunk
+          default: chat.completion.chunk
+          title: Object
+          type: string
+        created:
+          title: Created
+          type: integer
+        model:
+          title: Model
+          type: string
+        choices:
+          items:
+            $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__ChatCompletionResponseStreamChoice'
+          title: Choices
+          type: array
+        usage:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__UsageInfo'
+          - type: 'null'
+          default: null
+        prompt_token_ids:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Prompt Token Ids
+      required:
+      - model
+      - choices
+      title: ChatCompletionStreamResponse
+      type: object
+    Vlm_ChatCompletionStreamResponse__ChatCompletionLogProb:
+      additionalProperties: true
+      properties:
+        token:
+          title: Token
+          type: string
+        logprob:
+          default: -9999.0
+          title: Logprob
+          type: number
+        bytes:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Bytes
+      required:
+      - token
+      title: ChatCompletionLogProb
+      type: object
+    Vlm_ChatCompletionStreamResponse__ChatCompletionLogProbs:
+      additionalProperties: true
+      properties:
+        content:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__ChatCompletionLogProbsContent'
+            type: array
+          - type: 'null'
+          default: null
+          title: Content
+      title: ChatCompletionLogProbs
+      type: object
+    Vlm_ChatCompletionStreamResponse__ChatCompletionLogProbsContent:
+      additionalProperties: true
+      properties:
+        token:
+          title: Token
+          type: string
+        logprob:
+          default: -9999.0
+          title: Logprob
+          type: number
+        bytes:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Bytes
+        top_logprobs:
+          items:
+            $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__ChatCompletionLogProb'
+          title: Top Logprobs
+          type: array
+      required:
+      - token
+      title: ChatCompletionLogProbsContent
+      type: object
+    Vlm_ChatCompletionStreamResponse__ChatCompletionResponseStreamChoice:
+      additionalProperties: true
+      properties:
+        index:
+          title: Index
+          type: integer
+        delta:
+          $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__DeltaMessage'
+        logprobs:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__ChatCompletionLogProbs'
+          - type: 'null'
+          default: null
+        finish_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Finish Reason
+        stop_reason:
+          anyOf:
+          - type: integer
+          - type: string
+          - type: 'null'
+          default: null
+          title: Stop Reason
+        token_ids:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - type: 'null'
+          default: null
+          title: Token Ids
+      required:
+      - index
+      - delta
+      title: ChatCompletionResponseStreamChoice
+      type: object
+    Vlm_ChatCompletionStreamResponse__DeltaFunctionCall:
+      properties:
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Name
+        arguments:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Arguments
+      title: DeltaFunctionCall
+      type: object
+    Vlm_ChatCompletionStreamResponse__DeltaMessage:
+      additionalProperties: true
+      properties:
+        role:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Role
+        content:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Content
+        reasoning:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Reasoning
+        tool_calls:
+          items:
+            $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__DeltaToolCall'
+          title: Tool Calls
+          type: array
+      title: DeltaMessage
+      type: object
+    Vlm_ChatCompletionStreamResponse__DeltaToolCall:
+      additionalProperties: true
+      properties:
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Id
+        type:
+          anyOf:
+          - const: function
+            type: string
+          - type: 'null'
+          default: null
+          title: Type
+        index:
+          title: Index
+          type: integer
+        function:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__DeltaFunctionCall'
+          - type: 'null'
+          default: null
+      required:
+      - index
+      title: DeltaToolCall
+      type: object
+    Vlm_ChatCompletionStreamResponse__PromptTokenUsageInfo:
+      additionalProperties: true
+      properties:
+        cached_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Cached Tokens
+      title: PromptTokenUsageInfo
+      type: object
+    Vlm_ChatCompletionStreamResponse__UsageInfo:
+      additionalProperties: true
+      properties:
+        prompt_tokens:
+          default: 0
+          title: Prompt Tokens
+          type: integer
+        total_tokens:
+          default: 0
+          title: Total Tokens
+          type: integer
+        completion_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: 0
+          title: Completion Tokens
+        prompt_tokens_details:
+          anyOf:
+          - $ref: '#/components/schemas/Vlm_ChatCompletionStreamResponse__PromptTokenUsageInfo'
+          - type: 'null'
+          default: null
+      title: UsageInfo
+      type: object
+    Vlm_ModelList:
+      additionalProperties: true
+      properties:
+        object:
+          default: list
+          title: Object
+          type: string
+        data:
+          items:
+            $ref: '#/components/schemas/Vlm_ModelList__ModelCard'
+          title: Data
+          type: array
+      title: ModelList
+      type: object
+    Vlm_ModelList__ModelCard:
+      additionalProperties: true
+      properties:
+        id:
+          title: Id
+          type: string
+        object:
+          default: model
+          title: Object
+          type: string
+        created:
+          title: Created
+          type: integer
+        owned_by:
+          default: vllm
+          title: Owned By
+          type: string
+        root:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Root
+        parent:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Parent
+        max_model_len:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Max Model Len
+        permission:
+          items:
+            $ref: '#/components/schemas/Vlm_ModelList__ModelPermission'
+          title: Permission
+          type: array
+      required:
+      - id
+      title: ModelCard
+      type: object
+    Vlm_ModelList__ModelPermission:
+      additionalProperties: true
+      properties:
+        id:
+          title: Id
+          type: string
+        object:
+          default: model_permission
+          title: Object
+          type: string
+        created:
+          title: Created
+          type: integer
+        allow_create_engine:
+          default: false
+          title: Allow Create Engine
+          type: boolean
+        allow_sampling:
+          default: true
+          title: Allow Sampling
+          type: boolean
+        allow_logprobs:
+          default: true
+          title: Allow Logprobs
+          type: boolean
+        allow_search_indices:
+          default: false
+          title: Allow Search Indices
+          type: boolean
+        allow_view:
+          default: true
+          title: Allow View
+          type: boolean
+        allow_fine_tuning:
+          default: false
+          title: Allow Fine Tuning
+          type: boolean
+        organization:
+          default: '*'
+          title: Organization
+          type: string
+        group:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Group
+        is_blocking:
+          default: false
+          title: Is Blocking
+          type: boolean
+      title: ModelPermission
+      type: object
+    Vlm_ErrorResponse:
+      additionalProperties: true
+      properties:
+        error:
+          $ref: '#/components/schemas/Vlm_ErrorResponse__ErrorInfo'
+      required:
+      - error
+      title: ErrorResponse
+      type: object
+    Vlm_ErrorResponse__ErrorInfo:
+      additionalProperties: true
+      properties:
+        message:
+          title: Message
+          type: string
+        type:
+          title: Type
+          type: string
+        param:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Param
+        code:
+          title: Code
+          type: integer
+      required:
+      - message
+      - type
+      - code
+      title: ErrorInfo
+      type: object

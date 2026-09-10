@@ -3,6 +3,9 @@
 CPU 服务器部署 Web 应用与业务逻辑，GPU 主机通过统一 HTTPS 入口提供算法能力。
 所有已接入算法共用一个对外端口和 `GPU_API_KEY`，按路径分发；不设置调用方 IP 或域名白名单。
 
+接口 review 入口见 [契约总览](contracts/README.md)：包含 OpenAPI 3.1.1、YOLO gRPC 契约说明，
+并区分已实现接口、监控设计和尚未实现的预留路径。
+
 | 能力 | GPU 主机对外接口 | 内部地址 |
 | --- | --- | --- |
 | VLM 图文、工具与 SSE | `https://GPU_HOST:8443/vlm/v1/chat/completions` | `127.0.0.1:8000` |
