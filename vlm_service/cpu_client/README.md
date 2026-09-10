@@ -51,14 +51,78 @@ python3 demo.py --config config.json --image '/你的路径/票据.png' --prompt
 ```
 
 可重复 `--image` 传入两张图；不传图片时发送纯文本请求。文件路径相对当前工作目录解析。
-示例仍输出接口 JSON，答案在 `choices[0].message.content`，工具调用在 `choices[0].message.tool_calls`。
+默认输出接口 JSON，答案在 `choices[0].message.content`，工具调用在 `choices[0].message.tool_calls`。
 `client.py` 内部调用 `OpenAI(...).chat.completions.create()`，再把 SDK 响应转换为字典，保持原有示例的读取方式。
 配置文件和命令行参数无需因本次迁移改变。`thinking` 通过 SDK 的 `extra_body` 传给 vLLM。
 
-本客户端是同步非流式示例，显式设置 `max_retries=0`，每次调用只尝试一次；重试策略留给 CPU 业务层决定。
-SDK 的超时配置作用于网络操作，不是整个业务流程的总时限；长请求取消、SSE 和会话存储尚未实现。
+客户端提供同步完整响应和同步 SSE 迭代接口，显式设置 `max_retries=0`，每次调用只尝试一次；
+重试策略留给 CPU 业务层决定。SDK 的超时配置作用于网络操作，不是整个业务流程的总时限。
+退出流式上下文会关闭 HTTP 响应；会话存储由 CPU 业务层管理。
 默认不使用环境代理，也不跟随 HTTP 重定向；请配置最终可达的服务入口。
 客户端错误提示不包含服务端错误正文，避免输出文档或凭据；处理私密数据时不要启用 SDK 的调试日志。
+
+## 流式调用
+
+同一个 `/v1/chat/completions` 接口在请求中设置 `stream: true` 即返回 SSE，服务端无需另开端口。
+`stream_chat()` 已设置该参数，并请求最终 token 用量。命令行逐段打印答案、立即刷新输出：
+
+```bash
+python3 demo.py --config config.json --stream --prompt '请分三点介绍图片中的内容' --image '/你的路径/图片.png'
+```
+
+`--stream` 输出答案文本，默认模式输出完整 JSON；Ctrl+C 关闭本次连接。
+如果中途报错，命令以非零状态退出，已经输出的文字应视为未完成答案。
+
+后端接入使用上下文管理器，确保正常结束、提前 `break` 或异常时都关闭流：
+
+```python
+import os
+from client import VlmClient
+
+with VlmClient(os.environ['VLM_BASE_URL'], api_key=os.environ['VLM_API_KEY']) as client:
+    with client.stream_chat([{'role': 'user', 'content': '请介绍一下自己'}]) as chunks:
+        for chunk in chunks:
+            for choice in chunk.get('choices', []):
+                text = choice.get('delta', {}).get('content')
+                if text:
+                    print(text, end='', flush=True)
+            if chunk.get('usage'):
+                usage = chunk['usage']
+```
+
+每个 chunk 是标准 Chat Completions 增量字典，保留 `delta`、`finish_reason`、`usage` 和 vLLM 扩展字段。
+最终用量块的 `choices` 可以为空。图片、`thinking`、`tools`、`tool_choice` 参数与 `chat()` 相同。
+工具调用的名称和 JSON 参数可能分散在多个 chunk 中；CPU 按工具索引拼接，确认调用结束并完成白名单、
+权限和参数校验后再执行。`stream_chat()` 不自动执行工具，也不自动把这些片段合成完整回答。
+
+流中的超时、连接错误、服务端错误会转成脱敏的 `RuntimeError`，且不自动重试。
+在收到 `finish_reason` 前遇到 EOF 或结束标记也会报错。`finish_reason=length` 表示生成已达 token 上限，
+调用方应将其与正常的 `stop` 区分；取消或断流时不保证收到最终用量。
+
+这是同步迭代器。异步 Web 后端需通过框架的线程池桥接同步流，或使用异步 SDK 实现同等关闭与错误处理；
+不要在事件循环线程中直接执行阻塞迭代。浏览器断开时，CPU 后端应退出流式上下文，关闭到 GPU 的连接。
+已进入 GPU 的计算何时停止由推理引擎处理，关闭客户端连接不承诺瞬间释放显存。
+
+## Web 与反向代理转发
+
+完整链路是 `VLM SSE → CPU 后端流式响应 → 浏览器逐段读取`。CPU 后端收到片段后即发送，
+不要先收集成完整列表或调用完整响应的 JSON 读取；浏览器也需增量读取响应。
+算法 API key 仅保存在 CPU 后端。统一网关接入后，`VLM_BASE_URL` 可设为 `http://GPU入口:端口/vlm/v1`。
+
+如果链路中使用 NGINX，在已有流式路由的 `location` 内配置：
+
+```nginx
+proxy_buffering off;
+proxy_cache off;
+proxy_read_timeout 180s;
+```
+
+`proxy_buffering off` 让上游片段到达后立即转发，避免 NGINX 将小片段暂存后成批发送；
+它不改变模型生成速度，也不代表关闭日志或模型缓存。`proxy_read_timeout` 是两次上游读取之间的空闲时限，
+不是整个生成过程的总时限，应按实际首段延迟配置。链路上的 GPU 网关和 CPU Web 代理都需要检查。
+这些是流式路由配置项；当前仓库尚未部署统一网关或 CPU Web 应用。
+参见 [NGINX 响应缓冲说明](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering)
+和 [OpenAI Chat Completions 参数](https://developers.openai.com/api/reference/python/resources/chat/subresources/completions/methods/create)。
 
 ## 业务工具示例
 

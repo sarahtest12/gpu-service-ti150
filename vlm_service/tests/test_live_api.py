@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from PIL import Image, ImageDraw, ImageFont
@@ -17,12 +18,16 @@ from cpu_client.client import VlmClient
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def chat(messages):
+def configured_client():
     key = os.environ.get("VLM_API_KEY")
     if not key:
         key_file = ROOT / "runtime/api_key"
         key = key_file.read_text().strip() if key_file.exists() else "not-configured"
-    with VlmClient(os.environ.get("VLM_BASE_URL", "http://127.0.0.1:8000/v1"), api_key=key) as client:
+    return VlmClient(os.environ.get("VLM_BASE_URL", "http://127.0.0.1:8000/v1"), api_key=key)
+
+
+def chat(messages):
+    with configured_client() as client:
         return client.chat(messages)
 
 
@@ -44,6 +49,81 @@ def json_answer(response):
 
 @unittest.skipUnless(os.getenv("RUN_VLM_INTEGRATION") == "1", "requires running VLM and RUN_VLM_INTEGRATION=1")
 class LiveApiTest(unittest.TestCase):
+    def test_streaming_image_understanding(self):
+        image = Image.new("RGB", (320, 240), "white")
+        ImageDraw.Draw(image).rectangle((60, 40, 260, 200), fill="red")
+        messages = [{"role": "user", "content": [
+            image_content(image),
+            {"type": "text", "text": "Describe the color and shape in this image in two short English sentences."},
+        ]}]
+        started = time.monotonic()
+        first_text_seconds = None
+        text_parts = []
+        finish_reason = None
+        usage = None
+        with configured_client() as client:
+            with client.stream_chat(messages, max_tokens=128) as chunks:
+                for chunk in chunks:
+                    if chunk.get("usage"):
+                        usage = chunk["usage"]
+                    for choice in chunk.get("choices", []):
+                        text = choice.get("delta", {}).get("content")
+                        if text:
+                            if first_text_seconds is None:
+                                first_text_seconds = time.monotonic() - started
+                            text_parts.append(text)
+                        finish_reason = choice.get("finish_reason") or finish_reason
+        self.assertIn("red", "".join(text_parts).lower())
+        self.assertGreater(len(text_parts), 1)
+        self.assertEqual(finish_reason, "stop")
+        self.assertIsNotNone(usage)
+        self.assertGreater(usage["completion_tokens"], 0)
+        print(json.dumps({"stream_text_chunks": len(text_parts), "first_text_seconds": first_text_seconds,
+                          "total_seconds": time.monotonic() - started}))
+
+    def test_streaming_cancel_then_followup(self):
+        with configured_client() as client:
+            with client.stream_chat([{"role": "user", "content": "Count from 1 to 100, one number per line."}],
+                                    max_tokens=512) as chunks:
+                for chunk in chunks:
+                    if any(choice.get("delta", {}).get("content") for choice in chunk.get("choices", [])):
+                        break
+                else:
+                    self.fail("no text received before cancellation")
+            with client.stream_chat([{"role": "user", "content": "Reply with exactly OK."}],
+                                    max_tokens=16) as chunks:
+                text = "".join(choice.get("delta", {}).get("content") or ""
+                               for chunk in chunks for choice in chunk.get("choices", []))
+            self.assertIn("OK", text)
+
+    def test_streaming_tool_arguments(self):
+        tools = [{"type": "function", "function": {
+            "name": "get_order_status", "description": "Look up an order by its ID.",
+            "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}},
+                           "required": ["order_id"]},
+        }}]
+        calls = {}
+        finish_reason = None
+        with configured_client() as client:
+            with client.stream_chat(
+                [{"role": "user", "content": "Look up the status of order DEMO-1001."}],
+                tools=tools, tool_choice="auto", max_tokens=256,
+            ) as chunks:
+                for chunk in chunks:
+                    for choice in chunk.get("choices", []):
+                        finish_reason = choice.get("finish_reason") or finish_reason
+                        for delta in choice.get("delta", {}).get("tool_calls") or []:
+                            call = calls.setdefault(delta["index"], {"id": "", "name": "", "arguments": ""})
+                            call["id"] += delta.get("id") or ""
+                            function = delta.get("function") or {}
+                            call["name"] += function.get("name") or ""
+                            call["arguments"] += function.get("arguments") or ""
+        self.assertEqual(finish_reason, "tool_calls")
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0]["id"])
+        self.assertEqual(calls[0]["name"], "get_order_status")
+        self.assertEqual(json.loads(calls[0]["arguments"]), {"order_id": "DEMO-1001"})
+
     def test_image_understanding(self):
         image = Image.new("RGB", (640, 360), "white")
         draw = ImageDraw.Draw(image)

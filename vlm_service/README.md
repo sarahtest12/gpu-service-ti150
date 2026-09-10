@@ -42,7 +42,7 @@ bash scripts/bootstrap.sh
 
 - `/health`：模型引擎健康状态；不替代真实推理验证。
 - `/v1/models`：可用模型，需 Bearer token。
-- `/v1/chat/completions`：文本、图片和工具调用，需 Bearer token。
+- `/v1/chat/completions`：文本、图片和工具调用，需 Bearer token；支持完整响应和 `stream: true` 的 SSE 流式响应。
 - `/metrics`：vLLM 指标，限制到可信网络访问。
 
 bootstrap 会生成 `runtime/api_key`（0600），该值通过 `VLLM_API_KEY` 环境变量传给服务，不出现在启动参数中。
@@ -60,13 +60,16 @@ CPU 端使用相同令牌；通过私密渠道传递，不贴在聊天、文档�
 
 CPU 端复制 [`cpu_client/`](cpu_client/README.md) 并安装其中 `requirements.txt` 即可调用；
 客户端使用 OpenAI Python SDK，提供图文请求、可编辑 JSON 配置和只读业务工具示例，不复制 GPU 环境。
+流式调用使用 `with client.stream_chat(...) as chunks`；命令行加 `--stream` 即逐段显示文本。
+上下文退出会关闭流，异常输出会脱敏。Web 后端转发、工具参数片段和 NGINX 缓冲配置见
+[`cpu_client/README.md`](cpu_client/README.md#流式调用)。
 
 ## 验收
 
 客户端离线测试使用真实 SDK 访问本地 HTTP 测试桩，无需 GPU 或令牌：
 
 ```bash
-.venv/bin/python -m unittest discover -s tests -p test_cpu_client.py -v
+.venv/bin/python -m unittest discover -s tests -p 'test_cpu*.py' -v
 ```
 
 测试会向已运行的真实模型发送请求，不会另起模型实例或执行真实业务写操作：
@@ -75,6 +78,7 @@ CPU 端复制 [`cpu_client/`](cpu_client/README.md) 并安装其中 `requirement
 RUN_VLM_INTEGRATION=1 .venv/bin/python -m unittest discover -s tests -p test_live_api.py -v
 ```
 
+真实接口验收包括图文 SSE 增量、最终用量、工具参数增量、提前取消后的后续请求，以及原有的图片、文档和工具调用。
 不设置开关时测试跳过，以免在无 GPU 或客户环境中意外发送请求。
 本机已完成图片、文档字段和只读工具调用验收；结果与后续限制见 [`docs/validation.md`](docs/validation.md)。
 

@@ -1,11 +1,45 @@
 """Synchronous OpenAI SDK client for the self-hosted vLLM Chat Completions API."""
 
 import base64
+from contextlib import contextmanager
+import json
 import math
 from pathlib import Path
 import urllib.parse
 
-from openai import APIConnectionError, APIStatusError, APITimeoutError, DefaultHttpxClient, OpenAI
+import httpx
+from openai import APIConnectionError, APIError, APIStatusError, APITimeoutError, DefaultHttpxClient, OpenAI
+
+
+@contextmanager
+def _api_errors():
+    try:
+        yield
+    except APIStatusError as error:
+        raise RuntimeError(f"VLM HTTP {error.status_code}; check endpoint, model, token and server log") from None
+    except (APITimeoutError, httpx.TimeoutException):
+        raise RuntimeError("VLM request timed out; check server load or timeout_seconds") from None
+    except (APIConnectionError, httpx.TransportError):
+        raise RuntimeError("VLM connection failed; check endpoint and network access") from None
+    except (APIError, json.JSONDecodeError):
+        raise RuntimeError("VLM response failed; check server log") from None
+
+
+def _stream_chunks(stream):
+    finished = False
+    with _api_errors():
+        for chunk in stream:
+            if chunk.object != "chat.completion.chunk":
+                raise RuntimeError("VLM returned an invalid stream response")
+            data = chunk.model_dump(mode="json", exclude_unset=True)
+            for choice in data.get("choices", []):
+                if choice.get("finish_reason") == "error":
+                    raise RuntimeError("VLM response failed; check server log")
+                if choice.get("index") == 0 and choice.get("finish_reason"):
+                    finished = True
+            yield data
+        if not finished:
+            raise RuntimeError("VLM stream ended before completion; partial output is incomplete")
 
 
 def image_part(path):
@@ -54,7 +88,7 @@ class VlmClient:
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
-    def chat(self, messages, *, max_tokens=512, thinking=False, tools=None, tool_choice=None):
+    def _payload(self, messages, max_tokens, thinking, tools, tool_choice):
         if type(max_tokens) is not int or max_tokens <= 0:
             raise ValueError("max_tokens must be a positive integer")
         if type(thinking) is not bool:
@@ -66,14 +100,26 @@ class VlmClient:
             payload["tools"] = tools
         if tool_choice is not None:
             payload["tool_choice"] = tool_choice
-        try:
+        return payload
+
+    def chat(self, messages, *, max_tokens=512, thinking=False, tools=None, tool_choice=None):
+        payload = self._payload(messages, max_tokens, thinking, tools, tool_choice)
+        with _api_errors():
             completion = self._sdk.chat.completions.create(**payload)
             # Preserve the examples' dict interface, including vLLM extension fields.
             return completion.model_dump(mode="json", exclude_unset=True)
-        except APIStatusError as error:
-            # Avoid including credentials or document content in client error logs.
-            raise RuntimeError(f"VLM HTTP {error.status_code}; check endpoint, model, token and server log") from None
-        except APITimeoutError:
-            raise RuntimeError("VLM request timed out; check server load or timeout_seconds") from None
-        except APIConnectionError:
-            raise RuntimeError("VLM connection failed; check endpoint and network access") from None
+
+    @contextmanager
+    def stream_chat(self, messages, *, max_tokens=512, thinking=False, tools=None, tool_choice=None):
+        """Use ``with client.stream_chat(...) as chunks`` and iterate delta dictionaries.
+
+        Exiting the block closes the HTTP response, including on early break.
+        Tool arguments are fragments; assemble and validate them on the CPU.
+        """
+        payload = self._payload(messages, max_tokens, thinking, tools, tool_choice)
+        with _api_errors():
+            stream = self._sdk.chat.completions.create(
+                **payload, stream=True, stream_options={"include_usage": True},
+            )
+        with stream:
+            yield _stream_chunks(stream)
