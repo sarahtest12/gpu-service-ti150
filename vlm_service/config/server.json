@@ -1,0 +1,14 @@
+{
+  "model": "/share/fshare/common/models/Qwen/Qwen3.5-9B",
+  "served_model_name": "qwen3.5-9b",
+  "device": 1,
+  "host": "0.0.0.0",
+  "port": 8000,
+  "dtype": "bfloat16",
+  "max_model_len": 8192,
+  "max_num_seqs": 1,
+  "max_num_batched_tokens": 4096,
+  "gpu_memory_utilization": 0.8,
+  "max_images": 2,
+  "max_image_pixels": 786432
+}

@@ -1,0 +1,3 @@
+# CPU-only client dependencies, matching the locally verified SDK environment.
+openai==2.21.0
+httpx==0.28.1
