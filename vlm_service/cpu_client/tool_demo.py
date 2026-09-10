@@ -45,12 +45,16 @@ def main():
     if not re.fullmatch(r"DEMO-\d{4}", args.order_id):
         raise ValueError("use a demonstration order id such as DEMO-1001")
     cfg = json.loads(args.config.read_text(encoding="utf-8"))
+    ca_file = os.getenv("GPU_CA_FILE", cfg.get("ca_file"))
+    if ca_file:
+        ca_file = args.config.resolve().parent / ca_file
     messages = [
         {"role": "system", "content": "你是业务查询助手。查询订单必须调用 get_order_status，不能猜测状态。得到工具结果后，仅输出包含 order_id、status、source 的 JSON 对象，字段值与工具结果完全一致。"},
         {"role": "user", "content": f"请查询订单 {args.order_id} 的状态。"},
     ]
-    with VlmClient(os.getenv("VLM_BASE_URL", cfg["base_url"]), api_key=os.getenv("VLM_API_KEY", ""),
-                   model=cfg["model"], timeout_seconds=cfg["timeout_seconds"]) as client:
+    with VlmClient(os.getenv("VLM_BASE_URL", cfg["base_url"]), api_key=os.getenv("GPU_API_KEY", os.getenv("VLM_API_KEY", "")),
+                   model=cfg["model"], timeout_seconds=cfg["timeout_seconds"],
+                   ca_file=ca_file) as client:
         first = client.chat(messages, tools=TOOLS, tool_choice="auto", max_tokens=cfg["max_tokens"], thinking=cfg["thinking"])
         message = first["choices"][0]["message"]
         calls = message.get("tool_calls") or []

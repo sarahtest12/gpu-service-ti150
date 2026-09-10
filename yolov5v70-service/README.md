@@ -3,6 +3,11 @@
 这是可独立交付的 GPU 检测服务项目。运行时不依赖原始 YOLOv5 仓库；所需的
 YOLOv5 推理源码快照、模型、gRPC 契约、服务代码和测试均位于本目录内。
 
+本仓库统一部署使用 [算法网关](../gateway/README.md)：CPU 客户端连接 `GPU_HOST:8443`，
+启用 TLS 并使用共享的 `GPU_API_KEY`；原生 gRPC 方法路径保持 `/detector.v1.Detector/Detect`。
+内部端口默认 `127.0.0.1:50051`，固定 GPU 0；统一启停由仓库根目录的 `gateway/service.py` 管理。
+下面的独立启动和客户端命令用于本机调试，不与统一管理器混用。
+
 ## 运行前提
 
 - 天垓 BI-V150，驱动及 CoreX 4.4.0 SDK 已安装到 `/usr/local/corex`

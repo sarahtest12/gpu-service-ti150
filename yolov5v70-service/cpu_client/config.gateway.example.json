@@ -1,0 +1,11 @@
+{
+  "target": "GPU_HOST:8443",
+  "tls": true,
+  "ca_file": "server.crt",
+  "image": "test.jpg",
+  "stream_id": "cpu-test-camera",
+  "count": 15,
+  "fps": 5.0,
+  "connect_timeout_seconds": 5.0,
+  "rpc_timeout_seconds": 30.0
+}

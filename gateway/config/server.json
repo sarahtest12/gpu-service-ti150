@@ -1,0 +1,24 @@
+{
+  "listen_host": "0.0.0.0",
+  "listen_port": 8443,
+  "probe_host": "localhost",
+  "api_key_file": "../runtime/api_key",
+  "certificate": "../runtime/tls/server.crt",
+  "certificate_key": "../runtime/tls/server.key",
+  "vlm": {
+    "address": "127.0.0.1:8000",
+    "api_key_file": "../../vlm_service/runtime/api_key",
+    "max_body_bytes": 25165824,
+    "max_connections": 4,
+    "read_timeout_seconds": 180
+  },
+  "yolo": {
+    "address": "127.0.0.1:50051",
+    "health_address": "127.0.0.1:8081",
+    "api_key_file": "../runtime/yolo_api_key",
+    "weights": "../../yolov5v70-service/models/yolov5s.pt",
+    "weights_sha256": "8b3b748c1e592ddd8868022e8732fde20025197328490623cc16c6f24d0782ee",
+    "max_connections": 16,
+    "read_timeout_seconds": 120
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "base_url": "https://GPU_HOST:8443/vlm/v1",
+  "ca_file": "server.crt",
+  "model": "qwen3.5-9b",
+  "timeout_seconds": 180,
+  "max_tokens": 512,
+  "thinking": false
+}

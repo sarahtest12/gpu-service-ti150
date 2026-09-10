@@ -22,7 +22,8 @@ Python 使用 3.10–3.12；CPU 端安装普通 PyPI 包，不运行 `bootstrap_
 └── cpu_client/
     ├── README.md
     ├── requirements.txt         安装 ../shared 及 CPU 图片依赖
-    ├── config.example.json      配置模板，复制为 config.json 后编辑
+    ├── config.example.json      本机直连配置模板
+    ├── config.gateway.example.json  统一 TLS 入口模板，复制为 config.json
     ├── detector_client.py       Web 后端可直接复用的 gRPC 客户端
     ├── demo.py                  单帧 / 持续低帧率图片联调入口
     └── tests/test_client.py     不加载 GPU 的本地 gRPC 联调测试
@@ -38,15 +39,15 @@ OpenCV 可解码的图片，示例会重新编码为 JPEG。这里没有附带�
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-Copy-Item config.example.json config.json
+Copy-Item config.gateway.example.json config.json
 notepad config.json
 ```
 
 按下一节填写配置，然后运行：
 
 ```powershell
-# 如果在 config.json 里填了 token，可以省略这行。
-$env:DETECTOR_AUTH_TOKEN = '与GPU服务一致的token'
+$gpuSecureKey = Read-Host 'GPU API key' -AsSecureString
+$env:GPU_API_KEY = [System.Net.NetworkCredential]::new('', $gpuSecureKey).Password
 .\.venv\Scripts\python.exe demo.py --config config.json
 ```
 
@@ -58,9 +59,10 @@ $env:DETECTOR_AUTH_TOKEN = '与GPU服务一致的token'
 cd /你的路径/cpu_client
 python3 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
-cp config.example.json config.json
+cp config.gateway.example.json config.json
 # 用编辑器修改 config.json，并放入 test.jpg。
-export DETECTOR_AUTH_TOKEN='与GPU服务一致的token'
+read -rsp 'GPU API key: ' GPU_API_KEY
+export GPU_API_KEY
 .venv/bin/python demo.py --config config.json
 ```
 
@@ -70,8 +72,10 @@ Windows 和 WSL 的虚拟环境分别创建，不要跨环境复制 `.venv`。
 
 | 字段 | 用途 |
 |---|---|
-| `target` | CPU 实际可达的 gRPC `主机:端口`，不加 `http://` |
-| `token` | 与 GPU 的 `DETECTOR_AUTH_TOKEN` 一致；同名环境变量优先，包括空值 |
+| `target` | CPU 实际可达的 gRPC `主机:端口`，统一入口为 `GPU_HOST:8443`，不加 URL scheme |
+| `tls` | 统一入口必须为 `true`，校验证书链和 GPU 目标名称 |
+| `ca_file` | 开发证书路径，相对配置目录解析；`GPU_CA_FILE` 可覆盖，建议绝对路径；系统信任证书可省略 |
+| `token` | 可省略；`GPU_API_KEY` 优先，兼容旧的 `DETECTOR_AUTH_TOKEN` 环境变量，最后才读取此字段 |
 | `image` | 测试图片；相对路径按配置文件所在目录解析 |
 | `stream_id` | 摄像头标识，本例默认 `cpu-test-camera` |
 | `count` | 发送帧数，`1` 为单帧验证，默认 `15` |
@@ -84,10 +88,13 @@ GPU 交付脚本也排除该文件。不要在 `config.example.json` 中保存�
 
 Windows 图片路径建议写成 `C:/images/test.jpg`；如果用反斜杠，在 JSON 中要写成 `C:\\images\\test.jpg`。
 
-默认 `127.0.0.1:50051` 仅适合客户端所在环境中已有服务或有效隧道的情况。
-当前平台 SSH 入口已返回 `port forwarding is disabled`；本模块不会解除该限制。
-从 CPU 调用仍需管理员提供可达的 TCP 入口，填入 `target`。
-Windows SSH 建立的本地隧道应先配合 Windows 客户端测试，不要把 WSL 的回环地址视为同一个地址。
+通过私密渠道取得 GPU `gateway/runtime/api_key` 的内容作为 `GPU_API_KEY`，与 VLM 共用。
+把网关的 `server.crt` 放在配置文件旁；不复制 TLS 私钥或算法内部令牌。
+证书须包含 `target` 中的 GPU 目标名称，不限制调用方 IP 或域名。
+平台需提供可达的 `8443` TCP 入口，保留 TLS/HTTP2；本次验收未覆盖另一台 CPU 主机到此入口的网络。
+
+本机直连仍可用 `config.example.json`：`127.0.0.1:50051`、`tls=false` 和内部 `DETECTOR_AUTH_TOKEN`。
+它不启用 TLS，不能直接用于统一入口。直连测试前取消环境中的 `GPU_API_KEY`、`GPU_CA_FILE`。
 
 持续运行 60 秒可以设置 `count=300`、`fps=5`、`rpc_timeout_seconds=90`。
 这是重复发送固定图片的低负载联调，并不读取 RTSP。
@@ -107,6 +114,7 @@ protobuf JSON 中 `uint64`（例如 `frame_id`）按字符串输出；默认值�
 ```python
 import os
 import time
+from pathlib import Path
 
 from detector_client import DetectorClient, frame_from_jpeg, pb
 
@@ -126,7 +134,9 @@ frame = frame_from_jpeg(
 
 with DetectorClient(
     os.environ["DETECTOR_TARGET"],
-    token=os.environ["DETECTOR_AUTH_TOKEN"],
+    token=os.environ["GPU_API_KEY"],
+    tls=True,
+    root_certificates=Path(os.environ["GPU_CA_FILE"]).read_bytes() if os.environ.get("GPU_CA_FILE") else None,
 ) as client:
     for result in client.detect([frame], rpc_timeout_seconds=10):
         if result.code == pb.RESULT_CODE_OK:
@@ -137,6 +147,7 @@ with DetectorClient(
 ```
 
 这里的 `jpeg_bytes`、宽高及 PTS 来自你的解码器，不是预定义变量。
+示例使用 `DETECTOR_TARGET=GPU_HOST:8443`；开发证书通过 `GPU_CA_FILE` 的绝对路径读取。
 没有 PTS 时省略 `source_pts` 和两个 `time_base` 参数。
 `detect()` 可传入持续产出请求的迭代器，不要每帧重连；持续调用可以不传
 `rpc_timeout_seconds`，并在业务层负责停止和断线重连。离开 `with` 会关闭连接。

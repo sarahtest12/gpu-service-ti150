@@ -45,23 +45,34 @@ class DetectorClient:
     """用 with 管理连接，detect() 接收请求迭代器并逐帧返回 protobuf 结果。
 
     连接错误以 grpc 异常抛出；EXPIRED 等帧级结果原样返回，由业务处理。
-    此客户端用于可信私网或已获准的 SSH 隧道，传输本身不启用 TLS。
+    直连本机端口时默认明文；统一网关入口使用 tls=True 并验证证书。
     """
 
     def __init__(
         self, target: str, *, token: str = "", connect_timeout_seconds: float = 5.0,
         transport: TransportConfig = DEFAULT_TRANSPORT,
+        tls: bool = False, root_certificates: bytes | None = None,
     ):
+        if type(tls) is not bool:
+            raise ValueError("tls must be a boolean")
+        if root_certificates is not None and not tls:
+            raise ValueError("root_certificates requires tls=True")
         self._target = target
         self._metadata = (("authorization", f"Bearer {token}"),) if token else None
         self._connect_timeout = connect_timeout_seconds
         self._transport = transport
+        self._tls = tls
+        self._root_certificates = root_certificates
         self._channel: grpc.Channel | None = None
 
     def __enter__(self) -> DetectorClient:
         if self._channel is not None:
             raise RuntimeError("client is already connected")
-        channel = grpc.insecure_channel(self._target, options=self._transport.grpc_options())
+        if self._tls:
+            credentials = grpc.ssl_channel_credentials(root_certificates=self._root_certificates)
+            channel = grpc.secure_channel(self._target, credentials, options=self._transport.grpc_options())
+        else:
+            channel = grpc.insecure_channel(self._target, options=self._transport.grpc_options())
         try:
             grpc.channel_ready_future(channel).result(timeout=self._connect_timeout)
         except BaseException:

@@ -146,8 +146,10 @@ def healthy(record):
         return False
 
 
-def start(cfg):
+def start(cfg, *, foreground=False):
     if record := live_state():
+        if foreground:
+            raise RuntimeError("background VLM is already running; stop it before using foreground supervision")
         print(json.dumps({**record, "healthy": healthy(record)}, ensure_ascii=False))
         return
     with socket.socket() as probe:
@@ -169,6 +171,8 @@ def start(cfg):
         "--mm-processor-kwargs", json.dumps({"max_pixels": cfg["max_image_pixels"]}),
         "--allowed-media-domains", "media.invalid",
     ])
+    if foreground:
+        os.execvpe(args[0], args, env)
     logfile = RUNTIME / ("vllm-" + datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + ".log")
     fd = os.open(logfile, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     try:
@@ -204,7 +208,7 @@ def stop():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check", "init-key", "start", "status", "stop"))
+    parser.add_argument("action", choices=("check", "init-key", "start", "run", "status", "stop"))
     action = parser.parse_args().action
     RUNTIME.mkdir(mode=0o700, exist_ok=True)
     with (RUNTIME / "control.lock").open("a") as lock:
@@ -219,7 +223,7 @@ def main():
         elif action == "check":
             check(config())
         else:
-            start(config())
+            start(config(), foreground=action == "run")
 
 
 if __name__ == "__main__":

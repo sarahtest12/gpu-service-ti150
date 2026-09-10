@@ -28,6 +28,8 @@ def load_config(path: Path) -> dict:
             raise ValueError(f"配置 {key} 必须是非空字符串")
     if not isinstance(config.get("token", ""), str):
         raise ValueError("配置 token 必须是字符串")
+    if type(config.get("tls", False)) is not bool:
+        raise ValueError("配置 tls 必须是布尔值")
     count = config.get("count")
     if type(count) is not int or count <= 0:
         raise ValueError("配置 count 必须是正整数")
@@ -48,6 +50,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         config = load_config(args.config)
+        ca_file = os.environ.get("GPU_CA_FILE", config.get("ca_file"))
+        if ca_file and not config.get("tls", False):
+            raise ValueError("使用 ca_file 或 GPU_CA_FILE 时必须设置 tls=true")
+        certificates = (args.config.resolve().parent / ca_file).read_bytes() if ca_file else None
         # 相对图片路径始终相对于配置文件，而不是终端工作目录。
         image_path = args.config.resolve().parent / config["image"]
         image = cv2.imdecode(np.frombuffer(image_path.read_bytes(), dtype=np.uint8), cv2.IMREAD_COLOR)
@@ -91,8 +97,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         with DetectorClient(
             config["target"],
-            token=os.environ.get(AUTH_TOKEN_ENV, config.get("token", "")),
+            token=os.environ.get("GPU_API_KEY", os.environ.get(AUTH_TOKEN_ENV, config.get("token", ""))),
             connect_timeout_seconds=config["connect_timeout_seconds"],
+            tls=config.get("tls", False), root_certificates=certificates,
         ) as client:
             for result in client.detect(requests(), rpc_timeout_seconds=config["rpc_timeout_seconds"]):
                 completed += 1

@@ -19,11 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def configured_client():
-    key = os.environ.get("VLM_API_KEY")
+    key = os.environ.get("GPU_API_KEY", os.environ.get("VLM_API_KEY"))
     if not key:
         key_file = ROOT / "runtime/api_key"
         key = key_file.read_text().strip() if key_file.exists() else "not-configured"
-    return VlmClient(os.environ.get("VLM_BASE_URL", "http://127.0.0.1:8000/v1"), api_key=key)
+    return VlmClient(os.environ.get("VLM_BASE_URL", "http://127.0.0.1:8000/v1"), api_key=key,
+                     ca_file=os.environ.get("GPU_CA_FILE"))
 
 
 def chat(messages):

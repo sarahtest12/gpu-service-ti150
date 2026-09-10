@@ -91,7 +91,7 @@ scripts/run_gpu_detector.sh
 
 默认监听：
 
-- gRPC：`0.0.0.0:50051`
+- gRPC：`127.0.0.1:50051`
 - HTTP 健康检查：`127.0.0.1:8081`
 - GPU：设备 `0`
 - 模型：项目内 `models/yolov5s.pt`
@@ -132,7 +132,7 @@ python -m gpu_detector.continuous_client \
 
 | 环境变量 | 默认值 | 说明 |
 |---|---:|---|
-| `DETECTOR_GRPC_HOST` | `0.0.0.0` | gRPC 监听地址 |
+| `DETECTOR_GRPC_HOST` | `127.0.0.1` | gRPC 内部监听地址 |
 | `DETECTOR_GRPC_PORT` | `50051` | gRPC 端口 |
 | `DETECTOR_HEALTH_HOST` | `127.0.0.1` | HTTP 健康检查地址 |
 | `DETECTOR_HEALTH_PORT` | `8081` | HTTP 健康检查端口 |
@@ -206,9 +206,9 @@ sudo systemctl enable --now gpu-detector
 sudo systemctl status gpu-detector
 ```
 
-启用前必须替换 token，并确认服务安装在 `/opt/gpu-grpc-service`。GPU gRPC
-端口只允许 CPU 服务器私网 IP 访问；若两台服务器不在可信专网，需要在
-gRPC 前增加 mTLS。
+启用前必须替换 token，并确认服务安装在 `/opt/gpu-grpc-service`。此模板仅管理独立 YOLO。
+本仓库多算法部署使用 [`gateway/`](../../gateway/README.md) 的独立实例模板，避免重复启动。
+内部 gRPC 端口保留 loopback；对外 `8443` 使用 TLS 和统一 key，不设置调用方来源白名单。
 
 ## 9. 独立性交付检查
 
@@ -235,7 +235,8 @@ python -m unittest discover -s tests/gpu_detector -v
 
 ## 10. 双 GPU 扩展
 
-第一版一个进程只使用一张卡。使用两张 BI-V150 时，运行两个独立实例：
+一个进程只使用一张卡。本仓库当前 GPU 0 用于 YOLO、GPU 1 用于 VLM，不启用第二个 YOLO 实例。
+以下仅适用于另行部署的双卡 YOLO 主机：
 
 ```text
 实例 A：DETECTOR_DEVICE=0，DETECTOR_GRPC_PORT=50051

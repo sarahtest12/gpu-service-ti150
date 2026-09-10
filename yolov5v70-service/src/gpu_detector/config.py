@@ -56,7 +56,7 @@ class ModelConfig:
 
 @dataclass(frozen=True, slots=True)
 class DetectorConfig:
-    grpc_host: str = "0.0.0.0"
+    grpc_host: str = "127.0.0.1"
     grpc_port: int = DEFAULT_TRANSPORT.grpc_port
     health_host: str = "127.0.0.1"
     health_port: int = 8081
@@ -84,7 +84,7 @@ class DetectorConfig:
     @classmethod
     def from_env(cls) -> "DetectorConfig":
         config = cls(
-            grpc_host=os.getenv("DETECTOR_GRPC_HOST", "0.0.0.0"),
+            grpc_host=os.getenv("DETECTOR_GRPC_HOST", "127.0.0.1"),
             grpc_port=_env_int("DETECTOR_GRPC_PORT", DEFAULT_TRANSPORT.grpc_port),
             health_host=os.getenv("DETECTOR_HEALTH_HOST", "127.0.0.1"),
             health_port=_env_int("DETECTOR_HEALTH_PORT", 8081),

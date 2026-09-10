@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import math
 from pathlib import Path
+import ssl
 import urllib.parse
 
 import httpx
@@ -58,7 +59,7 @@ def image_part(path):
 
 
 class VlmClient:
-    def __init__(self, base_url, *, api_key, model="qwen3.5-9b", timeout_seconds=180):
+    def __init__(self, base_url, *, api_key, model="qwen3.5-9b", timeout_seconds=180, ca_file=None):
         parsed = urllib.parse.urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("base_url must be an HTTP(S) API base without credentials, query or fragment")
@@ -69,6 +70,7 @@ class VlmClient:
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.timeout = timeout_seconds
+        tls_context = ssl.create_default_context(cafile=str(ca_file)) if ca_file is not None else True
         self._sdk = OpenAI(
             base_url=self.base_url,
             api_key=api_key,
@@ -76,7 +78,7 @@ class VlmClient:
             # Preserve one attempt per call; retry policy belongs to the CPU application.
             max_retries=0,
             # Keep private documents at the explicit endpoint, without env proxies or redirects.
-            http_client=DefaultHttpxClient(trust_env=False, follow_redirects=False),
+            http_client=DefaultHttpxClient(trust_env=False, follow_redirects=False, verify=tls_context),
         )
 
     def close(self):

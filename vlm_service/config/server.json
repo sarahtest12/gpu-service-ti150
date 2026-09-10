@@ -2,7 +2,7 @@
   "model": "/share/fshare/common/models/Qwen/Qwen3.5-9B",
   "served_model_name": "qwen3.5-9b",
   "device": 1,
-  "host": "0.0.0.0",
+  "host": "127.0.0.1",
   "port": 8000,
   "dtype": "bfloat16",
   "max_model_len": 8192,

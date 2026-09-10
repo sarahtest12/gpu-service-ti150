@@ -17,11 +17,12 @@ python -m pip install -r requirements.txt
 
 ## 配置
 
-将 `config.example.json` 复制为 `config.json`，把 `base_url` 改成 CPU 实际可达的 GPU HTTP 入口，例如：
+统一部署将 `config.gateway.example.json` 复制为 `config.json`，把 `base_url` 改成 CPU 实际可达的 GPU 入口，例如：
 
 ```json
 {
-  "base_url": "http://GPU可达地址:8000/v1",
+  "base_url": "https://GPU可达地址:8443/vlm/v1",
+  "ca_file": "server.crt",
   "model": "qwen3.5-9b",
   "timeout_seconds": 180,
   "max_tokens": 512,
@@ -30,27 +31,33 @@ python -m pip install -r requirements.txt
 ```
 
 `VLM_BASE_URL` 环境变量可覆盖配置中的地址。`model` 使用服务别名，不使用权重路径。
-如果 GPU 通过平台端口映射访问，地址和端口使用平台提供的入口；之前开通的 YOLO 50051 不会自动覆盖本服务的 8000。
+如果 GPU 通过平台端口映射访问，地址和端口使用平台提供的统一入口，需要支持 TLS 和 HTTP/2。
+证书应包含此 GPU 目标地址，与调用方的 IP、域名无关。复制网关的 `server.crt` 到配置文件旁，
+或通过 `GPU_CA_FILE` 指定绝对路径；`ca_file` 的相对路径按配置目录解析。
+使用系统信任的正式证书时可删除 `ca_file`。
 
-通过私密渠道取得 GPU `runtime/api_key` 的内容并设置 `VLM_API_KEY`。令牌不放入 JSON 或源码。
+通过私密渠道取得 GPU `gateway/runtime/api_key` 的内容并设置 `GPU_API_KEY`，与 YOLO 共用。
+不复制私钥和内部令牌。令牌不放入 JSON 或源码。
 
 PowerShell：
 
 ```powershell
-$vlmSecureKey = Read-Host 'VLM API key' -AsSecureString
-$env:VLM_API_KEY = [System.Net.NetworkCredential]::new('', $vlmSecureKey).Password
+$gpuSecureKey = Read-Host 'GPU API key' -AsSecureString
+$env:GPU_API_KEY = [System.Net.NetworkCredential]::new('', $gpuSecureKey).Password
 python demo.py --config config.json --image 'C:\资料\票据.png' --prompt '提取票据编号和金额，只输出 JSON'
 ```
 
 Linux/WSL：
 
 ```bash
-read -rsp 'VLM API key: ' VLM_API_KEY
-export VLM_API_KEY
+read -rsp 'GPU API key: ' GPU_API_KEY
+export GPU_API_KEY
 python3 demo.py --config config.json --image '/你的路径/票据.png' --prompt '提取票据编号和金额，只输出 JSON'
 ```
 
 可重复 `--image` 传入两张图；不传图片时发送纯文本请求。文件路径相对当前工作目录解析。
+GPU 本机调试仍可使用 `config.example.json` 的 `http://127.0.0.1:8000/v1` 和内部 `VLM_API_KEY`；
+环境中设置了 `GPU_API_KEY` 时它优先，直连测试前应取消该变量。
 默认输出接口 JSON，答案在 `choices[0].message.content`，工具调用在 `choices[0].message.tool_calls`。
 `client.py` 内部调用 `OpenAI(...).chat.completions.create()`，再把 SDK 响应转换为字典，保持原有示例的读取方式。
 配置文件和命令行参数无需因本次迁移改变。`thinking` 通过 SDK 的 `extra_body` 传给 vLLM。
@@ -73,13 +80,15 @@ python3 demo.py --config config.json --stream --prompt '请分三点介绍图片
 `--stream` 输出答案文本，默认模式输出完整 JSON；Ctrl+C 关闭本次连接。
 如果中途报错，命令以非零状态退出，已经输出的文字应视为未完成答案。
 
-后端接入使用上下文管理器，确保正常结束、提前 `break` 或异常时都关闭流：
+后端接入使用上下文管理器，确保正常结束、提前 `break` 或异常时都关闭流。
+下列代码通过环境变量配置；使用开发证书时需设置 `GPU_CA_FILE` 为证书绝对路径：
 
 ```python
 import os
 from client import VlmClient
 
-with VlmClient(os.environ['VLM_BASE_URL'], api_key=os.environ['VLM_API_KEY']) as client:
+with VlmClient(os.environ['VLM_BASE_URL'], api_key=os.environ['GPU_API_KEY'],
+               ca_file=os.environ.get('GPU_CA_FILE')) as client:
     with client.stream_chat([{'role': 'user', 'content': '请介绍一下自己'}]) as chunks:
         for chunk in chunks:
             for choice in chunk.get('choices', []):
@@ -107,7 +116,7 @@ with VlmClient(os.environ['VLM_BASE_URL'], api_key=os.environ['VLM_API_KEY']) as
 
 完整链路是 `VLM SSE → CPU 后端流式响应 → 浏览器逐段读取`。CPU 后端收到片段后即发送，
 不要先收集成完整列表或调用完整响应的 JSON 读取；浏览器也需增量读取响应。
-算法 API key 仅保存在 CPU 后端。统一网关接入后，`VLM_BASE_URL` 可设为 `http://GPU入口:端口/vlm/v1`。
+算法 API key 仅保存在 CPU 后端。`VLM_BASE_URL` 可设为 `https://GPU入口:8443/vlm/v1`。
 
 如果链路中使用 NGINX，在已有流式路由的 `location` 内配置：
 
@@ -120,7 +129,7 @@ proxy_read_timeout 180s;
 `proxy_buffering off` 让上游片段到达后立即转发，避免 NGINX 将小片段暂存后成批发送；
 它不改变模型生成速度，也不代表关闭日志或模型缓存。`proxy_read_timeout` 是两次上游读取之间的空闲时限，
 不是整个生成过程的总时限，应按实际首段延迟配置。链路上的 GPU 网关和 CPU Web 代理都需要检查。
-这些是流式路由配置项；当前仓库尚未部署统一网关或 CPU Web 应用。
+本仓库统一 GPU 网关已配置这些选项；CPU Web 应用及其反向代理仍由 CPU 项目配置。
 参见 [NGINX 响应缓冲说明](https://nginx.org/en/docs/http/ngx_http_proxy_module.html#proxy_buffering)
 和 [OpenAI Chat Completions 参数](https://developers.openai.com/api/reference/python/resources/chat/subresources/completions/methods/create)。
 
@@ -148,8 +157,9 @@ import os
 from client import VlmClient, image_part
 
 with VlmClient(
-    'http://GPU可达地址:8000/v1',
-    api_key=os.environ['VLM_API_KEY'],
+    'https://GPU可达地址:8443/vlm/v1',
+    api_key=os.environ['GPU_API_KEY'],
+    ca_file=os.environ.get('GPU_CA_FILE'),
 ) as client:
     result = client.chat([{
         'role': 'user',
@@ -162,15 +172,17 @@ print(result['choices'][0]['message']['content'])
 
 ```python
 import os
+import ssl
 from openai import OpenAI, DefaultHttpxClient
 from client import image_part
 
 with OpenAI(
-    base_url=os.environ['VLM_BASE_URL'],  # 例如 http://GPU可达地址:8000/v1
-    api_key=os.environ['VLM_API_KEY'],
+    base_url=os.environ['VLM_BASE_URL'],  # 例如 https://GPU可达地址:8443/vlm/v1
+    api_key=os.environ['GPU_API_KEY'],
     timeout=180,
     max_retries=0,
-    http_client=DefaultHttpxClient(trust_env=False, follow_redirects=False),
+    http_client=DefaultHttpxClient(trust_env=False, follow_redirects=False,
+                                  verify=ssl.create_default_context(cafile=os.environ.get('GPU_CA_FILE'))),
 ) as client:
     response = client.chat.completions.create(
         model='qwen3.5-9b',

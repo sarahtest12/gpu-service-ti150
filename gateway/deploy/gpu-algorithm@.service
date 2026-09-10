@@ -1,0 +1,21 @@
+[Unit]
+Description=GPU algorithm process (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=gpu-service
+Group=gpu-service
+WorkingDirectory=/opt/gpu-service-ti150
+ExecStart=/usr/bin/python3 /opt/gpu-service-ti150/gateway/service.py run --service %i
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=40
+KillMode=control-group
+UMask=0077
+NoNewPrivileges=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -24,9 +24,13 @@ def main():
         raise ValueError("current server configuration accepts at most two images")
     content = [image_part(path) for path in args.image]
     content.append({"type": "text", "text": args.prompt})
+    ca_file = os.getenv("GPU_CA_FILE", cfg.get("ca_file"))
+    if ca_file:
+        ca_file = args.config.resolve().parent / ca_file
     with VlmClient(
-        os.getenv("VLM_BASE_URL", cfg["base_url"]), api_key=os.getenv("VLM_API_KEY", ""),
+        os.getenv("VLM_BASE_URL", cfg["base_url"]), api_key=os.getenv("GPU_API_KEY", os.getenv("VLM_API_KEY", "")),
         model=cfg["model"], timeout_seconds=cfg["timeout_seconds"],
+        ca_file=ca_file,
     ) as client:
         messages = [{"role": "user", "content": content}]
         if args.stream:

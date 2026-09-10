@@ -3,6 +3,11 @@
 使用天数适配版 vLLM 部署 `Qwen/Qwen3.5-9B`，为 CPU 智能体应用提供图片、文档页面和文本理解接口。
 服务直接提供 vLLM 的 HTTP API，不包装新的推理协议；模型提出工具调用，CPU 应用执行工具。
 
+本仓库统一部署时，通过 [算法网关](../gateway/README.md) 的 `https://GPU_HOST:8443/vlm/v1`
+访问，与 YOLO 共用端口和 `GPU_API_KEY`。模型内部只监听 `127.0.0.1:8000`。
+统一启停使用仓库根目录的 `python3 gateway/service.py start/status/stop`（分别执行）；
+下列独立管理命令用于单独部署或本机调试，不与网关管理器混用。
+
 ## 环境与配置
 
 本机部署配置的唯一来源是 [`config/server.json`](config/server.json)。
@@ -20,7 +25,7 @@
 ## 启动与停止
 
 ```bash
-cd /home/mbwang/myproj/vlm_service
+cd /你的仓库路径/vlm_service
 bash scripts/bootstrap.sh
 .venv/bin/python scripts/service.py start
 .venv/bin/python scripts/service.py status
@@ -46,9 +51,10 @@ bash scripts/bootstrap.sh
 - `/metrics`：vLLM 指标，限制到可信网络访问。
 
 bootstrap 会生成 `runtime/api_key`（0600），该值通过 `VLLM_API_KEY` 环境变量传给服务，不出现在启动参数中。
-CPU 端使用相同令牌；通过私密渠道传递，不贴在聊天、文档或源码里。
+该令牌用于本机直连或网关访问上游。统一部署的 CPU 端使用 `gateway/runtime/api_key`，
+由网关注入 VLM 内部令牌；通过私密渠道传递，不贴在聊天、文档或源码里。
 模型名称使用 `qwen3.5-9b`，而不是服务器上的模型文件路径。
-本阶段为私网 HTTP 服务；跨不可信网络需另配 TLS 和入口访问控制，不能仅凭令牌直接公开。
+内部接口是 loopback HTTP；统一入口使用 HTTPS 和共享凭据，调用方不需要来源 IP 或域名白名单。
 
 图片使用 `data:image/...;base64,...`。远程媒体 URL 默认只允许保留域名 `media.invalid`，
 实际用途是拒绝任意 URL 拉取；不开放本地媒体目录。需要其他来源时由 CPU 先读取图片并编码。
