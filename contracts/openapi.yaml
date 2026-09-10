@@ -1,7 +1,7 @@
 openapi: 3.1.1
 info:
   title: BI-V150 算法服务接口契约（Review）
-  version: 0.1.0-review
+  version: 0.2.0-review
   description: |
     CPU Web 后端访问 GPU 主机的统一 HTTP 契约。所有路径共用 HTTPS 端口和 GPU_API_KEY。
     x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
@@ -26,6 +26,8 @@ tags:
     description: 已实现的网关存活与算法就绪接口。
   - name: VLM
     description: 已实现的 Qwen3.5-9B 图文、工具及 SSE 调用。
+  - name: RAG
+    description: 已实现的 BGE-M3 文本稠密向量接口；暂不部署重排序模型。
   - name: Monitor
     description: 已对齐口径的监控设计；当前未实现。
 x-grpc:
@@ -38,7 +40,6 @@ x-grpc:
   review_notes: ./yolo-grpc.md
   implementation_status: implemented
 x-reserved-interfaces:
-  - {method: POST, path: /rag/v1/embeddings, status: reserved, current_http_status: 404}
   - {method: POST, path: /rag/v1/rerank, status: reserved, current_http_status: 404}
   - {method: POST, path: /asr/v1/audio/transcriptions, status: reserved, current_http_status: 404}
   - {method: POST, path: /tts/v1/audio/speech, status: reserved, current_http_status: 404}
@@ -46,9 +47,12 @@ x-source:
   repository_commit: 88bb84a
   gateway: ../gateway/configuration.py
   server_configuration: ../gateway/config/server.json
+  rag_configuration: ../rag_service/config/server.json
   vlm_configuration: ../vlm_service/config/server.json
   vlm_version: 0.17.0+corex.4.5.0.rc.11.20260701
   schema_models:
+    - vllm.entrypoints.pooling.embed.protocol.EmbeddingCompletionRequest
+    - vllm.entrypoints.pooling.embed.protocol.EmbeddingResponse
     - vllm.entrypoints.openai.chat_completion.protocol.ChatCompletionRequest
     - vllm.entrypoints.openai.chat_completion.protocol.ChatCompletionResponse
     - vllm.entrypoints.openai.chat_completion.protocol.ChatCompletionStreamResponse
@@ -254,6 +258,104 @@ paths:
         '500': {$ref: '#/components/responses/UpstreamError'}
         '502': {$ref: '#/components/responses/BadGateway'}
         '503': {$ref: '#/components/responses/UpstreamError'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+        default: {$ref: '#/components/responses/UpstreamError'}
+  /rag/health/ready:
+    get:
+      operationId: getRagReadiness
+      tags: [Health]
+      summary: BGE-M3 引擎是否就绪
+      x-implementation-status: implemented
+      description: 转发内部 /health；200 和 503 均为空响应体。检查需要统一 key。
+      responses:
+        '200':
+          description: BGE-M3 引擎健康；空响应体。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '503': {description: 引擎不健康；空响应体。}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+  /rag/v1/models:
+    get:
+      operationId: listRagModels
+      tags: [RAG]
+      summary: 获取向量模型列表
+      x-implementation-status: implemented
+      description: 模型别名为 bge-m3；当前 max_model_len=2048。与 VLM 使用同一个 vLLM ModelList 数据结构。
+      responses:
+        '200':
+          description: 向量模型列表。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Vlm_ModelList'}
+              example:
+                object: list
+                data:
+                  - {id: bge-m3, object: model, created: 1789034400, owned_by: vllm, max_model_len: 2048}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+        default: {$ref: '#/components/responses/UpstreamError'}
+  /rag/v1/embeddings:
+    post:
+      operationId: createRagEmbeddings
+      tags: [RAG]
+      summary: 使用 BGE-M3 生成 1024 维文本向量
+      x-implementation-status: implemented
+      description: |
+        基于 input 的 vLLM EmbeddingCompletionRequest；推荐 model=bge-m3、input 为字符串或字符串数组、
+        encoding_format=float。也支持该 tokenizer 的 token ID 输入与 base64 输出。
+        请求/响应 schema 从当前锁定版本 vLLM 导出，不重新定义协议。
+        本项目支持文本稠密向量；上游 messages/chat 模板、二进制编码等扩展不作为 CPU 示例的支持契约。
+        encoding_format=bytes/bytes_only 是上游二进制扩展，响应为 application/octet-stream。
+
+        默认 CLS pooling 和 L2 归一化，每段输出 1024 维。use_activation=false 会关闭归一化；
+        入库与查询必须使用相同模型和预处理，推荐保持默认设置。BGE-M3 无需查询指令。
+        不支持通过 dimensions 缩短向量；省略此参数。不提供 reranker、sparse 或 ColBERT 接口。
+        模型原生上限为 8192 tokens，但当前服务配置每段最多 2048 tokens（含特殊 token），超长默认返回 400。
+        truncate_prompt_tokens 为上游显式截断选项；CPU 示例不使用截断，应先对文档分块。
+        引擎最多同时处理 4 段、每轮最多 2048 tokens；这不是每个 HTTP 请求的数组元素数上限。
+        CPU 建议每次提交不超过 16 段；服务没有额外的数组长度硬限制，请求体仍限制为 256 KiB。
+        CPU 后端负责向量库、召回、权限和 RAG 编排；回答生成调用现有 VLM。
+        不自动重试；计费式 usage 是 tokenizer 统计，不能作为模型耗时。
+      x-request-body-limit-bytes: 262144
+      x-max-active-requests: 4
+      x-upstream-idle-timeout-seconds: 60
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Rag_EmbeddingCompletionRequest'}
+            examples:
+              single:
+                summary: 问题向量化
+                value: {model: bge-m3, input: 忘记密码后应该怎么办？, encoding_format: float}
+              batch:
+                summary: 文档片段批量入库
+                value:
+                  model: bge-m3
+                  input: [员工可通过手机验证码重置登录密码。, 差旅报销需要发票和审批单。]
+                  encoding_format: float
+      responses:
+        '200':
+          description: data 按输入顺序返回向量；index 与输入位置对应，usage 汇总本次请求的 token 数。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Rag_EmbeddingResponse'}
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/UpstreamError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/UpstreamError'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '502': {$ref: '#/components/responses/BadGateway'}
         '504': {$ref: '#/components/responses/GatewayTimeout'}
         default: {$ref: '#/components/responses/UpstreamError'}
   /monitor/v1/overview:
@@ -2631,4 +2733,217 @@ components:
       - type
       - code
       title: ErrorInfo
+      type: object
+
+    Rag_EmbeddingCompletionRequest:
+      additionalProperties: true
+      properties:
+        encoding_format:
+          default: float
+          enum:
+          - float
+          - base64
+          - bytes
+          - bytes_only
+          title: Encoding Format
+          type: string
+        embed_dtype:
+          default: float32
+          description: What dtype to use for encoding. Default to using float32 for base64
+            encoding to match the OpenAI python client behavior. This parameter will affect
+            base64 and binary_response.
+          enum:
+          - float32
+          - float16
+          - bfloat16
+          - fp8_e4m3
+          - fp8_e5m2
+          title: Embed Dtype
+          type: string
+        endianness:
+          default: native
+          description: What endianness to use for encoding. Default to using native for
+            base64 encoding to match the OpenAI python client behavior.This parameter
+            will affect base64 and binary_response.
+          enum:
+          - native
+          - big
+          - little
+          title: Endianness
+          type: string
+        dimensions:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Dimensions
+        use_activation:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          default: null
+          description: Whether to use activation for the pooler outputs. `None` uses the
+            pooler's default, which is `True` in most cases.
+          title: Use Activation
+        input:
+          anyOf:
+          - items:
+              type: integer
+            type: array
+          - items:
+              items:
+                type: integer
+              type: array
+            type: array
+          - type: string
+          - items:
+              type: string
+            type: array
+          title: Input
+        add_special_tokens:
+          default: true
+          description: If true (the default), special tokens (e.g. BOS) will be added
+            to the prompt.
+          title: Add Special Tokens
+          type: boolean
+        model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: Model
+        user:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          title: User
+        truncate_prompt_tokens:
+          anyOf:
+          - minimum: -1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Truncate Prompt Tokens
+        request_id:
+          description: The request_id related to this request. If the caller does not
+            set it, a random_uuid will be generated. This id is used through out the inference
+            process and return in response.
+          title: Request Id
+          type: string
+        priority:
+          default: 0
+          description: 'The priority of the request (lower means earlier handling; default:
+            0). Any priority other than 0 will raise an error if the served model does
+            not use priority scheduling.'
+          title: Priority
+          type: integer
+        mm_processor_kwargs:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          default: null
+          description: Additional kwargs to pass to the HF processor.
+          title: Mm Processor Kwargs
+        cache_salt:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: null
+          description: If specified, the prefix cache will be salted with the provided
+            string to prevent an attacker to guess prompts in multi-user environments.
+            The salt should be random, protected from access by 3rd parties, and long
+            enough to be unpredictable (e.g., 43 characters base64-encoded, corresponding
+            to 256 bit).
+          title: Cache Salt
+      required:
+      - input
+      title: EmbeddingCompletionRequest
+      type: object
+    Rag_EmbeddingResponse:
+      additionalProperties: true
+      properties:
+        id:
+          title: Id
+          type: string
+        object:
+          default: list
+          title: Object
+          type: string
+        created:
+          title: Created
+          type: integer
+        model:
+          title: Model
+          type: string
+        data:
+          items:
+            $ref: '#/components/schemas/Rag_EmbeddingResponse__EmbeddingResponseData'
+          title: Data
+          type: array
+        usage:
+          $ref: '#/components/schemas/Rag_EmbeddingResponse__UsageInfo'
+      required:
+      - model
+      - data
+      - usage
+      title: EmbeddingResponse
+      type: object
+    Rag_EmbeddingResponse__EmbeddingResponseData:
+      additionalProperties: true
+      properties:
+        index:
+          title: Index
+          type: integer
+        object:
+          default: embedding
+          title: Object
+          type: string
+        embedding:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: string
+          title: Embedding
+      required:
+      - index
+      - embedding
+      title: EmbeddingResponseData
+      type: object
+    Rag_EmbeddingResponse__PromptTokenUsageInfo:
+      additionalProperties: true
+      properties:
+        cached_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: null
+          title: Cached Tokens
+      title: PromptTokenUsageInfo
+      type: object
+    Rag_EmbeddingResponse__UsageInfo:
+      additionalProperties: true
+      properties:
+        prompt_tokens:
+          default: 0
+          title: Prompt Tokens
+          type: integer
+        total_tokens:
+          default: 0
+          title: Total Tokens
+          type: integer
+        completion_tokens:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          default: 0
+          title: Completion Tokens
+        prompt_tokens_details:
+          anyOf:
+          - $ref: '#/components/schemas/Rag_EmbeddingResponse__PromptTokenUsageInfo'
+          - type: 'null'
+          default: null
+      title: UsageInfo
       type: object

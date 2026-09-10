@@ -1,0 +1,6 @@
+{
+  "base_url": "https://GPU_HOST:8443/rag/v1",
+  "ca_file": "server.crt",
+  "model": "bge-m3",
+  "timeout_seconds": 60
+}

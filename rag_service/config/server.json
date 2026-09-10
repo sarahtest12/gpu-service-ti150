@@ -1,0 +1,12 @@
+{
+  "model": "/share/fshare/common/models/BAAI/bge-m3",
+  "served_model_name": "bge-m3",
+  "device": 0,
+  "host": "127.0.0.1",
+  "port": 8002,
+  "dtype": "half",
+  "max_model_len": 2048,
+  "max_num_seqs": 4,
+  "max_num_batched_tokens": 2048,
+  "gpu_memory_utilization": 0.15
+}

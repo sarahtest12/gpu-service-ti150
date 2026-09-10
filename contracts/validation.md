@@ -1,6 +1,8 @@
 # 契约校验记录
 
-日期：2026-09-10。实现基线：`88bb84a`。本轮只创建契约文档，并为根 README 增加入口链接。
+## 初始契约校验
+
+日期：2026-09-10。实现基线：`88bb84a`。该轮只创建契约文档，并为根 README 增加入口链接。
 没有启动网关或算法、加载模型、修改服务代码或全局 SDK，也没有把监控接口部署上线。
 
 | 校验 | 结果 |
@@ -30,3 +32,21 @@ python3 -m venv /tmp/gpu-contract-review
 结构和示例校验不等同于接口上线验收。已有网关/算法的真实调用记录仍见
 [`gateway/docs/validation.md`](../gateway/docs/validation.md)。
 监控实际实现、真实数据采集与 CPU 跨机调用，需要后续分别验收。
+
+## BGE-M3 部署后的契约增量
+
+同日新增 `/rag/health/ready`、`/rag/v1/models`、`/rag/v1/embeddings` 三个已实现操作，
+新增从本机锁定 vLLM 导出的 5 个 RAG schema。当前契约版本为 `0.2.0-review`。
+
+| 校验 | 结果 |
+| --- | --- |
+| `openapi-spec-validator==0.7.2` | 通过 |
+| 全部 91 个 JSON Schema 结构与内部引用 | 通过 |
+| 全部 16 个操作内请求/响应示例 | 通过 |
+| NGINX 精确路由与契约清单 | 9 个 location = 8 个已实现 HTTP path + 1 个 gRPC method |
+| 经网关返回的真实 RAG 模型列表和批量向量 JSON | 符合对应 200 响应 schema |
+| RAG 真实行为、错误与上下文边界 | 6 项通过，见 RAG 验收记录 |
+
+`/monitor/v1/overview` 继续保持 proposed；`/rag/v1/rerank` 继续预留并返回 404。
+没有新增监控聚合、重排序、ASR 或 TTS 实现。
+完整运行结果见 [`rag_service/docs/validation.md`](../rag_service/docs/validation.md)。

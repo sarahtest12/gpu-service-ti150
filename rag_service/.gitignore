@@ -1,0 +1,6 @@
+.venv/
+.venv.stale-*/
+runtime/
+__pycache__/
+*.py[cod]
+cpu_client/config.json

@@ -1,0 +1,3 @@
+# CPU-only packages; no torch or accelerator SDK is needed by the Web backend.
+openai==2.21.0
+httpx==0.28.1

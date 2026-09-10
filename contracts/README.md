@@ -1,7 +1,7 @@
 # 算法服务契约 Review
 
-本次只整理契约和说明，不修改算法或网关实现，不启动服务。
-当前实现基线是 `88bb84a`（add gateway）；监控部分依据本次对话确认的设计。
+初始 VLM/YOLO 契约基线为 `88bb84a`（add gateway）。随后已部署 BGE-M3，并增加 RAG 的三个公开接口。
+监控部分继续保留已确认的设计，尚未实现；重排序模型暂不部署。
 
 优先 review [`openapi.yaml`](openapi.yaml)。它是可导入 OpenAPI 工具的 **3.1.1** 单文件，
 包含已有 HTTP 接口和待实现的监控接口，全部 schema 引用均在文件内部。
@@ -20,13 +20,14 @@ YOLO 的原生双向流使用 [现有 detector.proto](../yolov5v70-service/share
 | HTTP POST | `/vlm/v1/chat/completions` | 文本、图片、工具、完整 JSON / SSE | 已实现 |
 | gRPC 双向流 | `/detector.v1.Detector/Detect` | YOLO 视频帧检测 | 已实现，`.proto` 为唯一契约源 |
 | HTTP GET | `/monitor/v1/overview` | 服务状态、显存、最近 60 秒耗时 | 已对齐的设计，未实现；当前 404 |
-| HTTP POST | `/rag/v1/embeddings` | 向量编码 | 预留路径，当前 404 |
+| HTTP GET | `/rag/health/ready` | BGE-M3 引擎就绪 | 已实现 |
+| HTTP GET | `/rag/v1/models` | 向量模型列表 | 已实现 |
+| HTTP POST | `/rag/v1/embeddings` | BGE-M3 文本向量编码 | 已实现 |
 | HTTP POST | `/rag/v1/rerank` | 检索重排 | 预留路径，当前 404 |
 | HTTP POST | `/asr/v1/audio/transcriptions` | 语音识别 | 预留路径，当前 404 |
 | HTTP POST | `/tts/v1/audio/speech` | 语音合成 | 预留路径，当前 404 |
 
-RAG、ASR、TTS 尚无已确认的模型、输入输出、文件限制或错误结构，暂不编造它们的请求/响应 schema。
-它们记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
+RAG rerank、ASR、TTS 记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
 YOLO 普通 HTTP 单图接口也尚未定义。监控的 RAG 耗时字段只是观测口径，不意味着已有 RAG 推理接口。
 
 统一目标为 `https://GPU_HOST:8443`，gRPC 客户端 target 为 `GPU_HOST:8443`。
@@ -87,9 +88,24 @@ SSE 的 HTTP 响应体是 `text/event-stream`，在 OpenAPI 中定义为字符�
 工具参数需要按索引拼接后在 CPU 校验执行；`choices=[]` 的最终 usage 事件有效。
 HTTP 200、`[DONE]` 或连接结束本身不能证明正常生成；需要结合 `finish_reason`，断流时保留未完成语义。
 
+## RAG 契约说明
+
+`Rag_EmbeddingCompletionRequest`、`Rag_EmbeddingResponse` 及子类型从同一个锁定版本 vLLM 导出。
+模型列表和错误复用已有 vLLM 的 `ModelList` / `ErrorResponse` schema。
+当前支持基于 `input` 的文本或 token ID 编码，推荐字符串/字符串数组和 `encoding_format=float`；
+`base64` 输出也已经验收。上游 chat/messages 和二进制扩展不作为 CPU 示例的支持契约。
+
+模型 `bge-m3` 默认返回 CLS pooling、L2 归一化后的 1024 维向量。
+`use_activation=false` 会关闭归一化；`dimensions` 不是本模型的可变维度功能，应省略。
+服务当前单段最多 2048 tokens，包含特殊 token，超长默认返回 400；模型原生 8192 上限不等于当前服务限制。
+CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为 256 KiB 请求体和引擎调度预算。
+默认不截断输入，文档分块、入库、检索、权限由 CPU 项目负责。
+详细部署限制与真实验证见 [`rag_service/README.md`](../rag_service/README.md) 和
+[`rag_service/docs/validation.md`](../rag_service/docs/validation.md)。
+
 ## 当前实现需要留意的差异
 
-- VLM 健康检查 200/503 为空响应体；YOLO 健康检查返回 JSON。
+- VLM/RAG 健康检查 200/503 为空响应体；YOLO 健康检查返回 JSON。
 - NGINX 401、403、413、502、504 等通常返回 HTML；当前没有统一 JSON 错误包装。
 - 当前 vLLM 请求字段校验错误转换为 400，不能默认写成 FastAPI 422 错误格式。
 - `/health/live` 当前固定返回实现未限定 HTTP 方法；本契约只约定客户端使用 GET。
@@ -111,6 +127,9 @@ HTTP 200、`[DONE]` 或连接结束本身不能证明正常生成；需要结合
 | `127.0.0.1:8081` | `/health/live`、`/health/ready` | YOLO JSON 健康检查；仅本机，无 key |
 | `127.0.0.1:8081` | `/metrics` | YOLO Prometheus 文本指标；仅本机，无 key |
 | `127.0.0.1:50051` | `/detector.v1.Detector/Detect` | 同一 protobuf 契约，使用 YOLO 内部 key |
+| `127.0.0.1:8002` | `/health` | RAG 健康检查；空响应体，本机无需 key |
+| `127.0.0.1:8002` | `/v1/models`、`/v1/embeddings` | RAG 内部 key，对应公共 RAG 契约 |
+| `127.0.0.1:8002` | `/metrics` | vLLM 内部诊断指标；不转发到统一网关 |
 
 厂商 vLLM 包中其他管理、tokenize 或文档路由没有被网关转发，不属于本项目对 CPU 的支持契约。
 
@@ -120,7 +139,7 @@ HTTP 200、`[DONE]` 或连接结束本身不能证明正常生成；需要结合
 也可以直接看 YAML 的 `paths`，再按 `$ref` 找到对应输入输出结构。
 不要根据 `proposed` 操作生成“已上线”列表；预留接口的请求/响应需要另行设计。
 
-本轮校验结果记录在 [`validation.md`](validation.md)。未启动模型、未修改 SDK 或 API 行为。
+初始契约与 RAG 增量校验结果记录在 [`validation.md`](validation.md)。
 
 描述规范依据：[OpenAPI 3.1.1](https://spec.openapis.org/oas/v3.1.1.html)；
 gRPC 双向流语义依据：[gRPC 核心概念](https://grpc.io/docs/what-is-grpc/core-concepts/)。

@@ -32,7 +32,10 @@ def write_private(path, text):
 
 
 def init(cfg, names):
-    for path in (cfg["api_key_file"], cfg["vlm"]["api_key_file"], cfg["yolo"]["api_key_file"]):
+    paths = [cfg["api_key_file"], cfg["vlm"]["api_key_file"], cfg["yolo"]["api_key_file"]]
+    if "rag" in cfg:
+        paths.append(cfg["rag"]["api_key_file"])
+    for path in paths:
         secret(path, create=True)
     cert, key = cfg["certificate"], cfg["certificate_key"]
     if cert.exists() or key.exists():
@@ -62,13 +65,17 @@ def prepare_gateway(cfg):
     if not NGINX.is_file():
         raise ValueError("run bash gateway/bootstrap.sh first")
     content = render(cfg, RUNTIME)
+    (RUNTIME / "logs").mkdir(mode=0o700, exist_ok=True)
     target = RUNTIME / "nginx.conf"
-    write_private(target, content)
+    pending = RUNTIME / "nginx.pending.conf"
+    write_private(pending, content)
     command = [str(NGINX), "-p", str(RUNTIME) + "/", "-c", str(target)]
-    result = subprocess.run([*command, "-t"], capture_output=True, text=True)
+    result = subprocess.run([str(NGINX), "-p", str(RUNTIME) + "/", "-c", str(pending), "-t"],
+                            capture_output=True, text=True)
     write_private(RUNTIME / "check.log", result.stdout + result.stderr)
     if result.returncode:
         raise RuntimeError("NGINX configuration check failed; inspect gateway/runtime/check.log locally")
+    os.replace(pending, target)
     return command
 
 
@@ -76,14 +83,16 @@ def command_for(name, cfg):
     env = os.environ.copy()
     if name == "gateway":
         return prepare_gateway(cfg), env, ROOT
-    if name == "vlm":
-        project = REPO / "vlm_service"
+    if name in ("vlm", "rag"):
+        if name not in cfg:
+            raise ValueError(f"{name} is not configured")
+        project = REPO / f"{name}_service"
         local = json.loads((project / "config/server.json").read_text())
         host = f"[{local['host']}]" if ":" in local["host"] else local["host"]
-        if f"{host}:{local['port']}" != cfg["vlm"]["address"]:
-            raise ValueError("VLM listen address must match the gateway loopback upstream")
-        if cfg["vlm"]["api_key_file"] != project / "runtime/api_key":
-            raise ValueError("VLM upstream key must point to vlm_service/runtime/api_key")
+        if f"{host}:{local['port']}" != cfg[name]["address"]:
+            raise ValueError(f"{name} listen address must match the gateway loopback upstream")
+        if cfg[name]["api_key_file"] != project / "runtime/api_key":
+            raise ValueError(f"{name} upstream key must point to {name}_service/runtime/api_key")
         return [str(project / ".venv/bin/python"), "scripts/service.py", "run"], env, project
     project = REPO / "yolov5v70-service"
     host, port = cfg["yolo"]["address"].rsplit(":", 1)
@@ -180,8 +189,8 @@ def status(name, cfg):
         context.load_verify_locations(cafile=str(cfg["certificate"]))
         healthy = ready(f"https://{cfg['probe_host']}:{cfg['listen_port']}/health/live",
                         context, secret(cfg["api_key_file"]))
-    elif name == "vlm":
-        healthy = ready(f"http://{cfg['vlm']['address']}/health")
+    elif name in ("vlm", "rag"):
+        healthy = name in cfg and ready(f"http://{cfg[name]['address']}/health")
     else:
         healthy = ready(f"http://{cfg['yolo']['health_address']}/health/ready")
     return {"managed": bool(record), "ready": healthy, **(record or {})}
@@ -189,8 +198,8 @@ def status(name, cfg):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("init", "check", "start", "stop", "status", "run"))
-    parser.add_argument("--service", choices=("all", "gateway", "yolo", "vlm"), default="all")
+    parser.add_argument("action", choices=("init", "check", "reload", "start", "stop", "status", "run"))
+    parser.add_argument("--service", choices=("all", "gateway", "yolo", "vlm", "rag"), default="all")
     parser.add_argument("--name", action="append", default=[], help="GPU destination DNS/IP for a development certificate")
     args = parser.parse_args()
     os.umask(0o077)
@@ -204,9 +213,18 @@ def main():
         elif args.action == "check":
             prepare_gateway(cfg)
             print("NGINX configuration: PASS")
+        elif args.action == "reload":
+            if args.service not in ("all", "gateway"):
+                raise ValueError("reload applies only to the gateway")
+            record = live_state("gateway")
+            if not record:
+                raise RuntimeError("gateway is not managed and running; use start or its supervisor")
+            prepare_gateway(cfg)
+            os.kill(record["pid"], signal.SIGHUP)
+            print("gateway: reload requested; verify readiness and the changed routes")
         elif args.action == "run":
             if args.service == "all":
-                raise ValueError("run needs --service gateway, yolo or vlm")
+                raise ValueError("run needs --service gateway, yolo, vlm or rag")
             if live_state(args.service):
                 raise RuntimeError("managed process already running")
             command, env, cwd = command_for(args.service, cfg)
@@ -214,7 +232,8 @@ def main():
             os.chdir(cwd)
             os.execvpe(command[0], command, env)
         else:
-            names = ["yolo", "vlm", "gateway"] if args.service == "all" else [args.service]
+            names = (["yolo", "vlm"] + (["rag"] if "rag" in cfg else []) + ["gateway"]
+                     if args.service == "all" else [args.service])
             if args.action == "status":
                 print(json.dumps({name: status(name, cfg) for name in names}, indent=2))
             else:

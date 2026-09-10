@@ -37,18 +37,21 @@ def load(path):
         raise ValueError("probe_host must be a DNS name, IPv4 address or bracketed IPv6 address")
     for field in ("api_key_file", "certificate", "certificate_key"):
         cfg[field] = (path.parent / cfg[field]).resolve()
-    for name in ("vlm", "yolo"):
+    names = ["vlm", "yolo"] + (["rag"] if "rag" in cfg else [])
+    for name in names:
         route = cfg[name]
         address(route["address"])
         route["api_key_file"] = (path.parent / route["api_key_file"]).resolve()
         positive(route, "max_connections", 1024)
         positive(route, "read_timeout_seconds", 3600)
     positive(cfg["vlm"], "max_body_bytes", 1024 * 1024 * 1024)
+    if "rag" in cfg:
+        positive(cfg["rag"], "max_body_bytes", 1024 * 1024 * 1024)
     address(cfg["yolo"]["health_address"])
     cfg["yolo"]["weights"] = (path.parent / cfg["yolo"]["weights"]).resolve()
     if not re.fullmatch(r"[0-9a-f]{64}", cfg["yolo"]["weights_sha256"]):
         raise ValueError("yolo weights_sha256 must be 64 lowercase hexadecimal characters")
-    for endpoint in (cfg["vlm"]["address"], cfg["yolo"]["address"], cfg["yolo"]["health_address"]):
+    for endpoint in [cfg[name]["address"] for name in names] + [cfg["yolo"]["health_address"]]:
         if int(endpoint.rsplit(":", 1)[1]) == cfg["listen_port"]:
             raise ValueError("gateway and upstream must use different ports")
     return cfg
@@ -75,7 +78,31 @@ def render(cfg, runtime):
     public_key = secret(cfg["api_key_file"])
     vlm_key = secret(cfg["vlm"]["api_key_file"])
     yolo_key = secret(cfg["yolo"]["api_key_file"])
-    if len({public_key, vlm_key, yolo_key}) != 3:
+    keys = [public_key, vlm_key, yolo_key]
+    rag_locations, rag_zone = "", ""
+    if "rag" in cfg:
+        rag = cfg["rag"]
+        rag_key = secret(rag["api_key_file"])
+        keys.append(rag_key)
+        rag_zone = "limit_conn_zone $server_name zone=rag_slots:32k;"
+        for public, upstream, method in (("/rag/v1/embeddings", "/v1/embeddings", "POST"),
+                                         ("/rag/v1/models", "/v1/models", "GET"),
+                                         ("/rag/health/ready", "/health", "GET")):
+            timeout = 3 if upstream == "/health" else rag["read_timeout_seconds"]
+            limit = f"limit_conn rag_slots {rag['max_connections']};" if method == "POST" else ""
+            rag_locations += f"""
+        location = {public} {{
+            limit_except {method} {{ deny all; }}
+            {limit}
+            client_max_body_size {rag['max_body_bytes']};
+            proxy_set_header Authorization {quoted('Bearer ' + rag_key)};
+            proxy_set_header Connection "";
+            proxy_set_header X-Request-ID $request_id;
+            proxy_read_timeout {timeout}s;
+            proxy_pass http://{rag['address']}{upstream};
+        }}
+"""
+    if len(set(keys)) != len(keys):
         raise ValueError("public and internal credentials must be distinct")
     if not cfg["certificate"].is_file() or not cfg["certificate_key"].is_file():
         raise ValueError("configure a TLS certificate and key, or run init for a development certificate")
@@ -103,6 +130,7 @@ http {{
     map $http_authorization $auth_failed {{ default 1; {quoted(pattern)} 0; }}
     limit_conn_zone $server_name zone=vlm_slots:32k;
     limit_conn_zone $server_name zone=yolo_slots:32k;
+    {rag_zone}
     limit_conn_status 429;
     server {{
         listen {host}:{cfg['listen_port']} ssl;
@@ -151,6 +179,7 @@ http {{
             proxy_read_timeout 3s;
             proxy_pass http://{yolo['health_address']}/health/ready;
         }}
+        {rag_locations}
         location = /detector.v1.Detector/Detect {{
             limit_except POST {{ deny all; }}
             client_max_body_size 0;

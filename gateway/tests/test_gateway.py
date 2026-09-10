@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 import grpc
 import httpx
@@ -20,6 +21,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(REPO / "gateway"), str(REPO / "vlm_service/cpu_client"),
                str(REPO / "yolov5v70-service/cpu_client"), str(REPO / "yolov5v70-service/shared")]
 from configuration import render, secret
+import service as gateway_service
 from client import VlmClient
 from detector_client import DetectorClient, frame_from_jpeg, pb
 from detector_contract import detector_pb2_grpc
@@ -58,6 +60,9 @@ class GatewayTest(unittest.TestCase):
         self.grpc_metadata = []
         self.stream_mode = "normal"
         self.http_status = 200
+        self.rag_status = 200
+        self.rag_pause = False
+        self.rag_started = threading.Event()
         self.release = threading.Event()
         self.peer_closed = threading.Event()
         self.grpc_closed = threading.Event()
@@ -77,6 +82,18 @@ class GatewayTest(unittest.TestCase):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fixture.http_requests.append((self.path, dict(self.headers), body))
+                if self.path == "/v1/embeddings":
+                    fixture.rag_started.set()
+                    if fixture.rag_pause:
+                        fixture.release.wait(4)
+                    result = json.dumps({"object": "list", "model": "bge-m3", "data": [],
+                                         "usage": {"prompt_tokens": 1, "total_tokens": 1}}).encode()
+                    self.send_response(fixture.rag_status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(result)))
+                    self.end_headers()
+                    self.wfile.write(result)
+                    return
                 if fixture.http_status != 200:
                     self.send_response(fixture.http_status)
                     self.send_header("Content-Length", "0")
@@ -150,11 +167,14 @@ class GatewayTest(unittest.TestCase):
             "vlm": {"address": f"127.0.0.1:{self.http_server.server_port}",
                     "api_key_file": self.root / "vlm_key", "max_body_bytes": 1024,
                     "max_connections": 1, "read_timeout_seconds": 2},
+            "rag": {"address": f"127.0.0.1:{self.http_server.server_port}",
+                    "api_key_file": self.root / "rag_key", "max_body_bytes": 512,
+                    "max_connections": 1, "read_timeout_seconds": 2},
             "yolo": {"address": f"127.0.0.1:{grpc_port}",
                      "health_address": f"127.0.0.1:{self.http_server.server_port}",
                      "api_key_file": self.root / "yolo_key", "max_connections": 1, "read_timeout_seconds": 2},
         }
-        for path in (self.cfg["api_key_file"], self.cfg["vlm"]["api_key_file"], self.cfg["yolo"]["api_key_file"]):
+        for path in (self.cfg["api_key_file"], *(self.cfg[n]["api_key_file"] for n in ("vlm", "yolo", "rag"))):
             secret(path, create=True)
         self.key = secret(self.cfg["api_key_file"])
         config = self.root / "nginx.conf"
@@ -280,7 +300,7 @@ class GatewayTest(unittest.TestCase):
                     list(chunks)
 
     def test_route_allowlist_body_limit_and_upstream_errors(self):
-        for path in ("/metrics", "/v1/models", "/vlm/metrics", "/rag/v1/embeddings"):
+        for path in ("/metrics", "/v1/models", "/vlm/metrics", "/rag/v1/rerank", "/rag/metrics", "/rag/pooling"):
             self.assertEqual(self.http.get(path).status_code, 404)
         self.assertEqual(self.http.get("/vlm/v1/chat/completions").status_code, 403)
         self.assertEqual(self.http.post("/vlm/v1/chat/completions", content=b"x" * 1025).status_code, 413)
@@ -288,6 +308,58 @@ class GatewayTest(unittest.TestCase):
         self.http_status = 503
         self.assertEqual(self.http.post("/vlm/v1/chat/completions", json={}).status_code, 503)
         self.assertEqual(len(self.http_requests), 1)
+
+    def test_rag_json_routes_use_own_key_and_enforce_public_auth_method_and_size(self):
+        payload = {"model": "bge-m3", "input": ["中文资料", "English document"]}
+        for token in ("", "wrong", secret(self.cfg["rag"]["api_key_file"])):
+            request = self.http.build_request("POST", "/rag/v1/embeddings", json=payload)
+            request.headers.pop("Authorization")
+            if token:
+                request.headers["Authorization"] = "Bearer " + token
+            response = self.http.send(request)
+            self.assertEqual(response.status_code, 401)
+        self.assertEqual(self.http_requests, [])
+        response = self.http.post("/rag/v1/embeddings", json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["model"], "bge-m3")
+        path, headers, body = self.http_requests[-1]
+        self.assertEqual((path, body), ("/v1/embeddings", payload))
+        self.assertEqual(headers["Authorization"], "Bearer " + secret(self.cfg["rag"]["api_key_file"]))
+        self.assertEqual(headers["X-Request-ID"], response.headers["X-Request-ID"])
+        for path, upstream in (("/rag/v1/models", "/v1/models"), ("/rag/health/ready", "/health")):
+            self.assertEqual(self.http.get(path).status_code, 200)
+            self.assertEqual(self.http_requests[-1][0], upstream)
+            self.assertEqual(self.http_requests[-1][1]["Authorization"], headers["Authorization"])
+        self.assertEqual(self.http.get("/rag/v1/embeddings").status_code, 403)
+        self.assertEqual(self.http.post("/rag/v1/embeddings", content=b"x" * 513).status_code, 413)
+
+    def test_rag_limits_and_failures_do_not_block_other_algorithms(self):
+        self.rag_pause = True
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(self.http.post, "/rag/v1/embeddings", json={"input": "hello"})
+            try:
+                self.assertTrue(self.rag_started.wait(1))
+                self.assertEqual(self.http.post("/rag/v1/embeddings", json={"input": "hello"}).status_code, 429)
+                self.assertEqual(self.http.get("/vlm/v1/models").status_code, 200)
+                with self.detector() as client:
+                    self.assertEqual(next(client.detect([self.frame(2)], rpc_timeout_seconds=2)).code, pb.RESULT_CODE_OK)
+            finally:
+                self.release.set()
+            self.assertEqual(pending.result().status_code, 200)
+        self.rag_status = 503
+        self.assertEqual(self.http.post("/rag/v1/embeddings", json={"input": "hello"}).status_code, 503)
+        self.assertEqual(self.http.get("/health/live").status_code, 200)
+        self.assertEqual(self.http.get("/vlm/v1/models").status_code, 200)
+
+    def test_failed_configuration_check_retains_last_valid_gateway_configuration(self):
+        with patch.object(gateway_service, "RUNTIME", self.root):
+            gateway_service.prepare_gateway(self.cfg)
+            original = (self.root / "nginx.conf").read_bytes()
+            broken = self.root / "invalid.crt"
+            broken.write_text("not a certificate")
+            with self.assertRaisesRegex(RuntimeError, "configuration check failed"):
+                gateway_service.prepare_gateway({**self.cfg, "certificate": broken})
+            self.assertEqual((self.root / "nginx.conf").read_bytes(), original)
 
     def test_one_upstream_failure_keeps_other_algorithm_and_gateway_available(self):
         self.grpc_server.stop(0).wait()
