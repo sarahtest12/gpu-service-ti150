@@ -37,7 +37,7 @@ def load(path):
         raise ValueError("probe_host must be a DNS name, IPv4 address or bracketed IPv6 address")
     for field in ("api_key_file", "certificate", "certificate_key"):
         cfg[field] = (path.parent / cfg[field]).resolve()
-    names = ["vlm", "yolo"] + [name for name in ("rag", "asr", "tts") if name in cfg]
+    names = ["vlm", "yolo"] + [name for name in ("rag", "asr", "tts", "monitor") if name in cfg]
     for name in names:
         route = cfg[name]
         address(route["address"])
@@ -167,6 +167,23 @@ def render(cfg, runtime):
             proxy_pass http://{tts['address']}/health;
         }}
 """
+    monitor_locations, monitor_zone = "", ""
+    if "monitor" in cfg:
+        monitor = cfg["monitor"]
+        monitor_key = secret(monitor["api_key_file"])
+        keys.append(monitor_key)
+        monitor_zone = "limit_conn_zone $server_name zone=monitor_slots:32k;"
+        monitor_locations = f"""
+        location = /monitor/v1/overview {{
+            limit_except GET {{ deny all; }}
+            limit_conn monitor_slots {monitor['max_connections']};
+            proxy_set_header Authorization {quoted('Bearer ' + monitor_key)};
+            proxy_set_header Connection "";
+            proxy_set_header X-Request-ID $request_id;
+            proxy_read_timeout {monitor['read_timeout_seconds']}s;
+            proxy_pass http://{monitor['address']}/v1/overview;
+        }}
+"""
     if len(set(keys)) != len(keys):
         raise ValueError("public and internal credentials must be distinct")
     if not cfg["certificate"].is_file() or not cfg["certificate_key"].is_file():
@@ -199,6 +216,7 @@ http {{
     {rag_zone}
     {asr_zone}
     {tts_zone}
+    {monitor_zone}
     limit_conn_status 429;
     server {{
         listen {host}:{cfg['listen_port']} ssl;
@@ -250,6 +268,7 @@ http {{
         {rag_locations}
         {asr_locations}
         {tts_locations}
+        {monitor_locations}
         location = /detector.v1.Detector/Detect {{
             limit_except POST {{ deny all; }}
             client_max_body_size 0;

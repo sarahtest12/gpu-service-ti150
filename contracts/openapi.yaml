@@ -1,12 +1,11 @@
 openapi: 3.1.1
 info:
-  title: BI-V150 算法服务接口契约（Review）
-  version: 0.4.0-review
+  title: BI-V150 算法服务接口契约
+  version: 0.6.0
   description: |
     CPU Web 后端访问 GPU 主机的统一 HTTP/WebSocket 契约。所有路径共用 TLS 端口和 GPU_API_KEY。
     x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
-    x-implementation-status=proposed 表示待实现的设计，当前请求该路径仍返回 404。
-    本文件不启动服务、不发布路由，也不把未部署算法视为可用。
+    x-implementation-status=proposed 表示待实现的设计。本文件不把未部署算法视为可用。
     YOLO 原生 gRPC 双向流由 x-grpc 指向的 detector.proto 定义；不转换为 JSON POST 接口。
     ASR 的 WebSocket 握手在 paths 中定义，双向消息语义由 x-websocket 指向的文档定义。
     VLM 数据结构从本机锁定版本的 vLLM 协议模型导出。上游 schema 中出现的音频、视频等字段
@@ -34,7 +33,7 @@ tags:
   - name: TTS
     description: 已实现的 CosyVoice-300M-Instruct 流式语音合成。
   - name: Monitor
-    description: 已对齐口径的监控设计；当前未实现。
+    description: 已实现的算法状态、显存和最近 60 秒耗时快照。
 x-grpc:
   target: '{gpu_host}:{port}'
   tls: true
@@ -55,12 +54,13 @@ x-reserved-interfaces:
   - {method: POST, path: /rag/v1/rerank, status: reserved, current_http_status: 404}
 x-source:
   repository_base_commit: c023e63
-  working_tree_change: CosyVoice-300M-Instruct streaming TTS deployment
+  working_tree_change: CosyVoice TTS deployment and five-service monitoring implementation
   gateway: ../gateway/configuration.py
   server_configuration: ../gateway/config/server.json
   rag_configuration: ../rag_service/config/server.json
   asr_configuration: ../asr_service/config/server.json
   tts_configuration: ../tts_service/config/server.json
+  monitor_configuration: ../monitor_service/config/server.json
   vlm_configuration: ../vlm_service/config/server.json
   vlm_version: 0.17.0+corex.4.5.0.rc.11.20260701
   schema_models:
@@ -528,22 +528,39 @@ paths:
     get:
       operationId: getMonitoringOverview
       tags: [Monitor]
-      summary: '[设计待实现] 已部署服务的状态、显存和最近 60 秒耗时'
-      x-implementation-status: proposed
-      x-current-http-status: 404
+      summary: 已部署服务的状态、显存和最近 60 秒耗时
+      x-implementation-status: implemented
       x-poll-interval-seconds: 5
+      x-sample-interval-seconds: 5
       description: |
-        无请求体和查询参数。每 5 秒采样，返回最近一次采样；耗时按最近 60 秒的已有样本计算。
-        仅返回已部署服务；未部署的 RAG/ASR/TTS 等不生成占位记录。同一 name 最多出现一次。
+        无请求体。监控服务每 5 秒采样；未提供 refresh 或 refresh=false 时返回最近一次采样。
+        耗时按最近 60 秒的已有样本计算，但响应不重复返回固定的窗口长度。CPU Web 后端应使用单个后台任务每 5 秒
+        调用本接口，并通过 CPU 后端与前端之间的长连接广播。前端手动刷新时，CPU 后端可以立即
+        使用 refresh=true 调用本接口；监控服务完成一次立即采样后才返回，重新检查服务状态和显存，
+        并按该时点重新计算最近 60 秒耗时。并发的强制刷新可以合并为同一次新采样。
+        仅返回已部署服务；未部署服务不生成占位记录。同一 name 最多出现一次。
         进程存活且健康检查通过为 running；已部署但未运行（包括主动停止）或检查失败为 error。
         仅 running 返回显存与耗时；error 只含 name、status。显存包含服务的推理子进程。
         MB=1000000 字节，采集源为 MiB 时需换算。采集不到显存返回 null，不以 0 代替。
         YOLO 统计 GPU 端每帧模型推理耗时，排除排队、预处理、NMS 和网络；当前 batch_size=1。
         VLM 统计 GPU 端首 token 延迟，包含服务端排队，不包含 CPU 与 GPU 间网络耗时。
         RAG 统计单次 HTTP 请求在 GPU 主机服务端的完整处理耗时，包含内部排队与处理。
+        ASR 按每次 partial/final 解码轮次统计首文本 token 延迟：从已准备好的音频上下文提交给
+        GPU 解码器，到首个文本 token 在 GPU 主机服务进程可见；不包含音频累计、VAD 等待和网络。
+        TTS 每个 HTTP 请求统计一次首语音 token 延迟：从文本提交给 GPU 语音 token 解码器，
+        到首个语音 token 在 GPU 主机服务进程可见；不包含文本规范化、声学解码、声码器和网络，
+        因此不等同于首段可播放音频。
         avg_ms/p95_ms 均为毫秒，P95 是直方图估算；无样本或不可采集时为 null。
-        启动不足 60 秒使用已有样本；采样失败或数据过期应返回 503，不以旧数据冒充当前状态。
-        具体过期阈值及重启窗口处理见 README 的待 review 细节；本操作当前尚未实现。
+        启动不足 60 秒使用已有样本；累计计数器重启或采样间隔超过 12.5 秒时重新建立基线。
+        快照超过 15 秒、首次采样失败或强制刷新失败时返回 503，不以旧数据冒充当前状态。
+      parameters:
+        - name: refresh
+          in: query
+          required: false
+          description: |
+            省略或 false 时读取最近一次定时快照；true 时等待一次立即采样并返回新快照。
+            用于前端手动刷新，不用于每 5 秒的常规轮询。
+          schema: {type: boolean, default: false}
       responses:
         '200':
           description: 成功取得监控数据；服务列表中允许包含 error 项。
@@ -557,10 +574,9 @@ paths:
               schema: {$ref: '#/components/schemas/MonitoringOverview'}
               examples:
                 running:
-                  summary: 当前已部署 YOLO 和 VLM（数值仅示意）
+                  summary: 五个算法服务均正常（数值仅示意）
                   value:
                     sampled_at: '2026-09-10T08:00:00Z'
-                    window_seconds: 60
                     services:
                       - name: yolo
                         status: running
@@ -570,11 +586,22 @@ paths:
                         status: running
                         memory_mb: 28000.0
                         latency: {metric: time_to_first_token, avg_ms: 320.0, p95_ms: 480.0}
+                      - name: rag
+                        status: running
+                        memory_mb: 2300.0
+                        latency: {metric: http_request, avg_ms: 105.0, p95_ms: 119.0}
+                      - name: asr
+                        status: running
+                        memory_mb: 9400.0
+                        latency: {metric: time_to_first_token, avg_ms: 480.0, p95_ms: 720.0}
+                      - name: tts
+                        status: running
+                        memory_mb: 2150.0
+                        latency: {metric: time_to_first_token, avg_ms: 9000.0, p95_ms: 19000.0}
                 errorAndIdle:
                   summary: YOLO 正常但无耗时样本，VLM 异常
                   value:
                     sampled_at: '2026-09-10T08:00:05Z'
-                    window_seconds: 60
                     services:
                       - name: yolo
                         status: running
@@ -583,17 +610,26 @@ paths:
                       - {name: vlm, status: error}
                 noDeployment:
                   summary: 没有部署任何已定义监控口径的算法
-                  value: {sampled_at: '2026-09-10T08:00:00Z', window_seconds: 60, services: []}
+                  value: {sampled_at: '2026-09-10T08:00:00Z', services: []}
+        '400':
+          description: refresh 取值无效、重复或存在未知查询参数。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MonitoringInvalidRequest'}
+              example: {error: invalid_request}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '502': {$ref: '#/components/responses/BadGateway'}
         '503':
-          description: '[设计] 采样尚未就绪、采集失败或快照过期；不返回旧快照。'
+          description: 采样尚未就绪、采集失败、快照过期，或强制刷新失败；不返回旧快照。
           headers:
             X-Request-ID: {$ref: '#/components/headers/RequestId'}
           content:
             application/json:
               schema: {$ref: '#/components/schemas/MonitoringUnavailable'}
               example: {error: monitor_unavailable}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
         '504': {$ref: '#/components/responses/GatewayTimeout'}
 components:
   securitySchemes:
@@ -637,7 +673,7 @@ components:
         text/html:
           schema: {type: string}
     TooManyRequests:
-      description: NGINX 路由并发限制或上游限流；VLM 为 4，TTS 为 1。不应自动重试生成请求。
+      description: NGINX 路由并发限制或上游限流；VLM 为 4，TTS 为 1，监控为 8。不应自动重试生成请求。
       headers:
         X-Request-ID: {$ref: '#/components/headers/RequestId'}
       content:
@@ -738,10 +774,9 @@ components:
     MonitoringOverview:
       type: object
       additionalProperties: false
-      required: [sampled_at, window_seconds, services]
+      required: [sampled_at, services]
       properties:
         sampled_at: {type: string, format: date-time, description: UTC 采样时间。}
-        window_seconds: {type: integer, const: 60}
         services:
           type: array
           description: 仅已部署服务，同一 name 最多一项；无部署时为空数组。
@@ -754,7 +789,7 @@ components:
       additionalProperties: false
       required: [name, status, memory_mb, latency]
       properties:
-        name: {type: string, enum: [yolo, vlm, rag]}
+        name: {type: string, enum: [yolo, vlm, rag, asr, tts]}
         status: {type: string, const: running}
         memory_mb:
           type: [number, 'null']
@@ -768,12 +803,16 @@ components:
           then: {properties: {latency: {properties: {metric: {const: time_to_first_token}}}}}
         - if: {properties: {name: {const: rag}}}
           then: {properties: {latency: {properties: {metric: {const: http_request}}}}}
+        - if: {properties: {name: {const: asr}}}
+          then: {properties: {latency: {properties: {metric: {const: time_to_first_token}}}}}
+        - if: {properties: {name: {const: tts}}}
+          then: {properties: {latency: {properties: {metric: {const: time_to_first_token}}}}}
     ErrorService:
       type: object
       additionalProperties: false
       required: [name, status]
       properties:
-        name: {type: string, enum: [yolo, vlm, rag]}
+        name: {type: string, enum: [yolo, vlm, rag, asr, tts]}
         status: {type: string, const: error}
     Latency:
       type: object
@@ -789,6 +828,12 @@ components:
       required: [error]
       properties:
         error: {type: string, const: monitor_unavailable}
+    MonitoringInvalidRequest:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error: {type: string, const: invalid_request}
     # Below: schemas exported from the installed vLLM protocol models; no model is loaded.
     Vlm_ChatCompletionRequest:
       additionalProperties: true

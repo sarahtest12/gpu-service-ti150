@@ -33,12 +33,9 @@ def write_private(path, text):
 
 def init(cfg, names):
     paths = [cfg["api_key_file"], cfg["vlm"]["api_key_file"], cfg["yolo"]["api_key_file"]]
-    if "rag" in cfg:
-        paths.append(cfg["rag"]["api_key_file"])
-    if "asr" in cfg:
-        paths.append(cfg["asr"]["api_key_file"])
-    if "tts" in cfg:
-        paths.append(cfg["tts"]["api_key_file"])
+    for name in ("rag", "asr", "tts", "monitor"):
+        if name in cfg:
+            paths.append(cfg[name]["api_key_file"])
     for path in paths:
         secret(path, create=True)
     cert, key = cfg["certificate"], cfg["certificate_key"]
@@ -87,6 +84,15 @@ def command_for(name, cfg):
     env = os.environ.copy()
     if name == "gateway":
         return prepare_gateway(cfg), env, ROOT
+    if name == "monitor":
+        project = REPO / "monitor_service"
+        local = json.loads((project / "config/server.json").read_text())
+        host = f"[{local['host']}]" if ":" in local["host"] else local["host"]
+        if f"{host}:{local['port']}" != cfg[name]["address"]:
+            raise ValueError("monitor listen address must match the gateway loopback upstream")
+        if cfg[name]["api_key_file"] != project / "runtime/api_key":
+            raise ValueError("monitor upstream key must point to monitor_service/runtime/api_key")
+        return [sys.executable, "scripts/service.py", "run"], env, project
     if name in ("vlm", "rag", "asr", "tts"):
         if name not in cfg:
             raise ValueError(f"{name} is not configured")
@@ -168,7 +174,14 @@ def stop(name):
         raise RuntimeError(f"{name}: unexpected process group")
     os.killpg(record["pid"], signal.SIGTERM)
     deadline = time.monotonic() + 30
-    while live_state(name):
+    while True:
+        try:
+            fields = Path(f"/proc/{record['pid']}/stat").read_text().rsplit(")", 1)[1].split()
+            alive = fields[0] != "Z" and fields[19] == record["start_ticks"]
+        except FileNotFoundError:
+            alive = False
+        if not alive:
+            break
         if time.monotonic() >= deadline:
             raise RuntimeError(f"{name}: shutdown timed out; inspect its processes before restarting")
         time.sleep(0.2)
@@ -193,8 +206,8 @@ def status(name, cfg):
         context.load_verify_locations(cafile=str(cfg["certificate"]))
         healthy = ready(f"https://{cfg['probe_host']}:{cfg['listen_port']}/health/live",
                         context, secret(cfg["api_key_file"]))
-    elif name in ("vlm", "rag", "asr", "tts"):
-        key = secret(cfg[name]["api_key_file"]) if name in ("asr", "tts") and name in cfg else None
+    elif name in ("vlm", "rag", "asr", "tts", "monitor"):
+        key = secret(cfg[name]["api_key_file"]) if name in ("asr", "tts", "monitor") and name in cfg else None
         healthy = name in cfg and ready(f"http://{cfg[name]['address']}/health", key=key)
     else:
         healthy = ready(f"http://{cfg['yolo']['health_address']}/health/ready")
@@ -204,7 +217,7 @@ def status(name, cfg):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("init", "check", "reload", "start", "stop", "status", "run"))
-    parser.add_argument("--service", choices=("all", "gateway", "yolo", "vlm", "rag", "asr", "tts"), default="all")
+    parser.add_argument("--service", choices=("all", "gateway", "yolo", "vlm", "rag", "asr", "tts", "monitor"), default="all")
     parser.add_argument("--name", action="append", default=[], help="GPU destination DNS/IP for a development certificate")
     args = parser.parse_args()
     os.umask(0o077)
@@ -229,15 +242,16 @@ def main():
             print("gateway: reload requested; verify readiness and the changed routes")
         elif args.action == "run":
             if args.service == "all":
-                raise ValueError("run needs --service gateway, yolo, vlm, rag, asr or tts")
+                raise ValueError("run needs one concrete service")
             if live_state(args.service):
                 raise RuntimeError("managed process already running")
             command, env, cwd = command_for(args.service, cfg)
+            env["GPU_GATEWAY_PROCESS"] = f"{ROOT}:{args.service}"
             fcntl.flock(lock, fcntl.LOCK_UN)
             os.chdir(cwd)
             os.execvpe(command[0], command, env)
         else:
-            names = (["yolo", "vlm"] + [name for name in ("rag", "asr", "tts") if name in cfg] + ["gateway"]
+            names = (["yolo", "vlm"] + [name for name in ("rag", "asr", "tts", "monitor") if name in cfg] + ["gateway"]
                      if args.service == "all" else [args.service])
             if args.action == "status":
                 print(json.dumps({name: status(name, cfg) for name in names}, indent=2))

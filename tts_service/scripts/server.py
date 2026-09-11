@@ -2,6 +2,7 @@
 """Authenticated streaming HTTP service for CosyVoice-300M-Instruct."""
 
 import argparse
+import functools
 import hmac
 import json
 import logging
@@ -13,11 +14,18 @@ from typing import Annotated, Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 import numpy as np
+from prometheus_client import CONTENT_TYPE_LATEST, Histogram, generate_latest
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 import uvicorn
 
 
 LOG = logging.getLogger("tts-service")
+TTS_TTFT = Histogram(
+    "tts_time_to_first_token_seconds",
+    "Time from speech-token decoder submission until its first speech token.",
+    buckets=(0.001, 0.005, 0.01, 0.02, 0.04, 0.08, 0.16, 0.32, 0.64,
+             1.28, 2.56, 5.12, 10.24, 20.48, 40.96, 81.92, 163.84),
+)
 
 
 class VendorPayloadFilter(logging.Filter):
@@ -74,6 +82,39 @@ class CosyVoiceEngine:
         self.cfg = cfg
         self.voices = tuple(cfg["voices"])
         self._slots = threading.BoundedSemaphore(cfg["max_concurrency"])
+        self._metric_lock = threading.Lock()
+        self._measure_first_token = False
+        self._instrument_token_decoder()
+
+    def _instrument_token_decoder(self):
+        """Observe the first speech token for the one active HTTP request."""
+        vendor_model = getattr(self.model, "model", None)
+        llm = getattr(vendor_model, "llm", None)
+        if llm is None:
+            return
+        original = llm.inference
+        if getattr(original, "_tts_ttft_instrumented", False):
+            return
+
+        @functools.wraps(original)
+        def measured_inference(*args, **kwargs):
+            started = time.perf_counter()
+            first = True
+            for token in original(*args, **kwargs):
+                if first:
+                    first = False
+                    self._observe_first_token(time.perf_counter() - started)
+                yield token
+
+        measured_inference._tts_ttft_instrumented = True
+        llm.inference = measured_inference
+
+    def _observe_first_token(self, latency_seconds):
+        with self._metric_lock:
+            if not self._measure_first_token:
+                return
+            self._measure_first_token = False
+        TTS_TTFT.observe(latency_seconds)
 
     def acquire(self):
         return self._slots.acquire(blocking=False)
@@ -88,6 +129,8 @@ class CosyVoiceEngine:
         output = None
         started = time.monotonic()
         first = True
+        with self._metric_lock:
+            self._measure_first_token = True
         try:
             output = self.model.inference_instruct(
                 text, voice, instructions, stream=True, speed=1.0,
@@ -110,6 +153,8 @@ class CosyVoiceEngine:
                         pass
                 except Exception:
                     LOG.exception("TTS generator cleanup failed request_id=%s", request_id or "-")
+            with self._metric_lock:
+                self._measure_first_token = False
             self._slots.release()
 
 
@@ -145,6 +190,11 @@ def create_app(engine, cfg, token):
     @app.get("/health", dependencies=[auth])
     def health():
         return {"status": "ok"}
+
+    @app.get("/metrics", dependencies=[auth])
+    def metrics():
+        return StreamingResponse(iter((generate_latest(),)), media_type=CONTENT_TYPE_LATEST,
+                                 headers={"Cache-Control": "no-store"})
 
     @app.get("/v1/audio/voices", dependencies=[auth])
     def voices():

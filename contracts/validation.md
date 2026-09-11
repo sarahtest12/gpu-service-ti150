@@ -31,7 +31,7 @@ python3 -m venv /tmp/gpu-contract-review
 
 结构和示例校验不等同于接口上线验收。已有网关/算法的真实调用记录仍见
 [`gateway/docs/validation.md`](../gateway/docs/validation.md)。
-监控实际实现、真实数据采集与 CPU 跨机调用，需要后续分别验收。
+监控实现与真实数据采集见本文后续增量记录；CPU 跨机调用仍需在 CPU 服务器接入时验收。
 
 ## BGE-M3 部署后的契约增量
 
@@ -84,5 +84,35 @@ ASR 真实行为与显存快照见 [`asr_service/docs/validation.md`](../asr_ser
 
 TTS 返回固定 22050 Hz 单声道 PCM S16LE，使用 HTTP chunked 传输，不定义分块大小。
 真实样本、首段时间与显存快照见
-[`tts_service/docs/validation.md`](../tts_service/docs/validation.md)。监控仍未实现，TTS 的监控耗时
-口径也尚未与现有 YOLO/VLM/RAG 指标契约合并。
+[`tts_service/docs/validation.md`](../tts_service/docs/validation.md)。
+
+## 五服务监控契约修订
+
+2026-09-11 按 review 删除响应中的 `window_seconds`，统计窗口仍固定为最近 60 秒；把 ASR 和
+TTS 加入服务枚举，两者都使用 `time_to_first_token`。ASR 统计每轮解码的首文本 token，TTS
+统计首语音 token，均明确起止点和排除项。GPU 接口继续返回单次快照，由 CPU 后端每 5 秒拉取
+并通过其与前端的长连接推送；手动刷新读取最新快照，不新增 GPU 长连接或强制采样参数。
+
+随后接受手动刷新建议，增加可选查询参数 `refresh`：省略或为 false 时读取定时快照，true 时等待
+一次立即采样；并发强制刷新允许合并。当前契约版本为 `0.5.1-review`。该修订只更新待实现契约和文档，
+`/monitor/v1/overview` 仍返回 404。
+
+## 五服务监控实现与验收
+
+2026-09-11 将 `/monitor/v1/overview` 从 proposed 更新为 implemented，契约版本为 `0.6.0`。
+监控进程每 5 秒采样，使用最近 60 秒的累计直方图增量，并通过 `ixsmi` 与进程父子关系归属显存。
+ASR 从 vLLM `RequestOutput.metrics.first_token_latency` 取每轮解码首 token；TTS 在每个 HTTP 请求
+第一次得到语音 token 时记录。两者的内部 `/metrics` 均要求各自内部 key，公网路径保持 404。
+
+| 校验 | 结果 |
+| --- | --- |
+| 监控解析、进程/计数器重启、窗口淘汰、P95 与强制刷新合并 | 6 项通过 |
+| TTS 请求、流式、鉴权与首 token 埋点 | 7 项通过 |
+| 真实 NGINX + TLS + HTTP/SSE/WebSocket/gRPC/监控路由 | 15 项通过 |
+| OpenAPI 3.1.1 与响应示例 | 通过 |
+| 公共入口普通快照与 `refresh=true` | 均为 200，带 `no-store` 与请求 ID |
+| 无公开 key / 非法 refresh / POST | 分别为 401 / 400 / 403 |
+
+同一份真实快照中五个算法均为 `running` 并返回十进制 MB。该 60 秒窗口的样例值为：YOLO
+8.735/9.875 ms、VLM 183.675/242.5 ms、RAG 46.031/285.0 ms、ASR 53.791/78.0 ms、
+TTS 7478.046/9984.0 ms（依次为 avg/P95）。这些数值只验证采集链路和字段口径，不作为性能承诺。

@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from server import CosyVoiceEngine, VendorPayloadFilter, create_app
+from server import CosyVoiceEngine, TTS_TTFT, VendorPayloadFilter, create_app
 
 
 class Tensor:
@@ -72,6 +72,38 @@ class TtsServerTest(unittest.TestCase):
         self.assertEqual(health.json(), {"status": "ok"})
         voices = self.client.get("/v1/audio/voices", headers=self.headers).json()["data"]
         self.assertEqual({item["id"] for item in voices}, set(configuration()["voices"]))
+        metrics = self.client.get("/metrics", headers=self.headers)
+        self.assertEqual(metrics.status_code, 200)
+        self.assertIn("tts_time_to_first_token_seconds", metrics.text)
+        self.assertEqual(self.client.get("/metrics").status_code, 401)
+
+    def test_records_only_the_first_speech_token_per_request(self):
+        class Llm:
+            def inference(self):
+                yield 1
+                yield 2
+
+        class Vendor:
+            def __init__(self):
+                self.llm = Llm()
+
+        class Wrapper:
+            def __init__(self):
+                self.model = Vendor()
+
+        engine = CosyVoiceEngine(Wrapper(), configuration())
+
+        def count():
+            return next(sample.value for family in TTS_TTFT.collect()
+                        for sample in family.samples if sample.name.endswith("_count"))
+
+        before = count()
+        with engine._metric_lock:
+            engine._measure_first_token = True
+        self.assertEqual(list(engine.model.model.llm.inference()), [1, 2])
+        self.assertEqual(count(), before + 1)
+        self.assertEqual(list(engine.model.model.llm.inference()), [1, 2])
+        self.assertEqual(count(), before + 1)
 
     def test_vendor_payload_text_is_not_logged(self):
         payload_filter = VendorPayloadFilter()

@@ -32,6 +32,12 @@
     "max_connections": 1,
     "read_timeout_seconds": 600
   },
+  "monitor": {
+    "address": "127.0.0.1:8005",
+    "api_key_file": "../../monitor_service/runtime/api_key",
+    "max_connections": 8,
+    "read_timeout_seconds": 10
+  },
   "yolo": {
     "address": "127.0.0.1:50051",
     "health_address": "127.0.0.1:8081",

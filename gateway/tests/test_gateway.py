@@ -79,7 +79,13 @@ class GatewayTest(unittest.TestCase):
         class HttpFixture(BaseHTTPRequestHandler):
             def do_GET(self):
                 fixture.http_requests.append((self.path, dict(self.headers), None))
-                if self.path == "/v1/audio/voices":
+                if self.path.startswith("/v1/overview"):
+                    value = {"sampled_at": "2026-09-11T08:00:00Z", "services": [
+                        {"name": "yolo", "status": "running", "memory_mb": 256.0,
+                         "latency": {"metric": "model_inference", "avg_ms": 12.0,
+                                     "p95_ms": 18.0}}
+                    ]}
+                elif self.path == "/v1/audio/voices":
                     value = {"object": "list", "data": [{"id": "中文女", "object": "voice",
                                                             "language": "Chinese"}]}
                 elif self.path == "/health":
@@ -89,6 +95,8 @@ class GatewayTest(unittest.TestCase):
                 body = json.dumps(value, ensure_ascii=False).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
+                if self.path.startswith("/v1/overview"):
+                    self.send_header("Cache-Control", "no-store")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -246,12 +254,15 @@ class GatewayTest(unittest.TestCase):
             "tts": {"address": f"127.0.0.1:{self.http_server.server_port}",
                     "api_key_file": self.root / "tts_key", "max_body_bytes": 512,
                     "max_connections": 1, "read_timeout_seconds": 2},
+            "monitor": {"address": f"127.0.0.1:{self.http_server.server_port}",
+                        "api_key_file": self.root / "monitor_key",
+                        "max_connections": 2, "read_timeout_seconds": 2},
             "yolo": {"address": f"127.0.0.1:{grpc_port}",
                      "health_address": f"127.0.0.1:{self.http_server.server_port}",
                      "api_key_file": self.root / "yolo_key", "max_connections": 1, "read_timeout_seconds": 2},
         }
         for path in (self.cfg["api_key_file"],
-                     *(self.cfg[n]["api_key_file"] for n in ("vlm", "yolo", "rag", "asr", "tts"))):
+                     *(self.cfg[n]["api_key_file"] for n in ("vlm", "yolo", "rag", "asr", "tts", "monitor"))):
             secret(path, create=True)
         self.key = secret(self.cfg["api_key_file"])
         config = self.root / "nginx.conf"
@@ -391,7 +402,8 @@ class GatewayTest(unittest.TestCase):
 
     def test_route_allowlist_body_limit_and_upstream_errors(self):
         for path in ("/metrics", "/v1/models", "/vlm/metrics", "/rag/v1/rerank", "/rag/metrics",
-                     "/rag/pooling", "/tts/metrics", "/tts/docs", "/tts/v1/models"):
+                     "/rag/pooling", "/asr/metrics", "/tts/metrics", "/tts/docs",
+                     "/tts/v1/models", "/monitor/health"):
             self.assertEqual(self.http.get(path).status_code, 404)
         self.assertEqual(self.http.get("/vlm/v1/chat/completions").status_code, 403)
         self.assertEqual(self.http.post("/vlm/v1/chat/completions", content=b"x" * 1025).status_code, 413)
@@ -496,6 +508,18 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(voices["data"][0]["id"], "中文女")
         self.assertEqual(self.http.get("/tts/v1/audio/speech").status_code, 403)
         self.assertEqual(self.http.post("/tts/v1/audio/speech", content=b"x" * 513).status_code, 413)
+
+    def test_monitor_snapshot_forwards_refresh_and_replaces_public_credential(self):
+        response = self.http.get("/monitor/v1/overview?refresh=true")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["services"][0]["name"], "yolo")
+        path, headers, body = self.http_requests[-1]
+        self.assertEqual((path, body), ("/v1/overview?refresh=true", None))
+        expected = "Bearer " + secret(self.cfg["monitor"]["api_key_file"])
+        self.assertEqual(headers["Authorization"], expected)
+        self.assertNotEqual(expected, "Bearer " + self.key)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(self.http.post("/monitor/v1/overview").status_code, 403)
 
     def test_failed_configuration_check_retains_last_valid_gateway_configuration(self):
         with patch.object(gateway_service, "RUNTIME", self.root):

@@ -26,10 +26,13 @@ python3 gateway/service.py reload --service gateway
 内部 key 位于忽略提交的 `asr_service/runtime/api_key`，只能由网关使用；CPU 后端继续使用
 `gateway/runtime/api_key` 中的统一公共 key。
 
+内部 `/metrics` 使用 vLLM 每轮解码返回的 `first_token_latency` 发布
+`asr_time_to_first_token_seconds` 直方图，并要求 ASR 内部 key。统一网关不直接公开该路径，
+仅由本机监控服务采集；计时不含音频累计和 VAD 等待。
+
 音频和返回事件见 [WebSocket 契约](../contracts/asr-websocket.md)。服务没有 HTTP 文件转写路径，
 也未启用说话人分离。当前配置上限为 4 个并发连接，480 ms 调度一次首轮 partial，后续以
 960 ms 音频增量触发模型解码，partial 滚动窗口为 8 秒。Fun-ASR-Nano 的实时实现会重复编码
 滚动音频窗口，并非带因果缓存的流式声学编码器；并发与延迟上限需要按业务音频继续压测。
 
 实际部署验证见 [验证记录](docs/validation.md)，CPU 调用示例见 [cpu_client](cpu_client/README.md)。
-

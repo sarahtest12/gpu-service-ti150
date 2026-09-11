@@ -10,8 +10,8 @@ VLM 使用 GPU 1。模型来自本机 BI150 资料中的已验证目录，运行
 | --- | --- |
 | 固定模型目录、模型元数据与关键厂商源码 SHA-256 | 通过 |
 | CoreX torch、CosyVoice 依赖与离线导入 | 通过 |
-| TTS 服务鉴权、字段限制、PCM 转换、取消清理、并发及日志脱敏单元测试 | 6 项通过 |
-| 真实 NGINX/TLS/HTTP/SSE/WebSocket/gRPC 测试桩 | 14 项通过 |
+| TTS 服务鉴权、字段限制、PCM 转换、取消清理、并发、日志脱敏及首 token | 7 项通过 |
+| 真实 NGINX/TLS/HTTP/SSE/WebSocket/gRPC/监控测试桩 | 15 项通过 |
 | 统一公开 key 替换为 TTS 内部 key | 通过 |
 | TTS PCM 首段在上游生成完成前经 NGINX 到达 | 通过 |
 | TTS 并发额度与 VLM 等其他算法隔离 | 通过 |
@@ -39,6 +39,10 @@ GPU 1 总占用约 27052 MiB；这是当时的进程显存快照，不是并发�
 启动日志中的 `CUDAExecutionProvider` 缺失警告来自用于语音提示特征的 ONNX Runtime 会话；当前
 固定预置音色 Instruct 接口不接收提示音频，实际合成主模型在 GPU 执行。还存在厂商依赖的弃用
 警告和 `ttsfrd` 缺失后切换到 WeTextProcessing 的提示，本次没有造成接口或推理失败。
+
+2026-09-11 增加监控后执行两次真实短文本合成，首语音 token 分别约 2.053 秒与 7.478 秒；
+后一次所在 60 秒快照的 avg/P95 为 7478.046/9984.0 ms。P95 是直方图桶内估算，因此单样本时
+不等于该样本原值。`/tts/metrics` 仍不公开，只允许本机监控服务使用 TTS 内部 key 读取。
 
 ## 复现
 

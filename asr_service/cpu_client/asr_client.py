@@ -78,11 +78,10 @@ class _SessionContext:
         self.manager = connect(
             self.client.url, ssl=self.client.context,
             additional_headers={"Authorization": "Bearer " + self.client.api_key},
-            open_timeout=self.client.open_timeout_seconds, compression=None,
+            open_timeout=self.client.open_timeout_seconds, compression=None, proxy=None,
         )
         connection = await self.manager.__aenter__()
         return RealtimeAsrSession(connection)
 
     async def __aexit__(self, exc_type, exc_value, traceback):
         return await self.manager.__aexit__(exc_type, exc_value, traceback)
-

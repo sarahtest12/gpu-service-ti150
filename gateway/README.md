@@ -1,6 +1,6 @@
 # 统一算法入口
 
-NGINX 在同一 TLS 端口承载 HTTP/1.1 和 HTTP/2：VLM 通过 HTTP/SSE，RAG 通过 HTTP JSON，ASR 通过 WebSocket，YOLO 通过原生 gRPC 双向流。
+NGINX 在同一 TLS 端口承载 HTTP/1.1 和 HTTP/2：VLM 通过 HTTP/SSE，RAG 与监控通过 HTTP JSON，ASR 通过 WebSocket，TTS 通过 HTTP PCM 流，YOLO 通过原生 gRPC 双向流。
 默认监听所有网卡的 `8443`，不设置调用方 IP、域名或 Origin 白名单。所有公开路径，包括状态接口，
 都校验 `Authorization: Bearer <GPU_API_KEY>`。网络平台或防火墙仍需放行这个端口。
 
@@ -37,6 +37,7 @@ bootstrap 固定 NGINX 1.30.4 并校验源码 SHA-256，启用 SSL 与 HTTP/2，
 | `rag_service/runtime/api_key` | RAG 内部 key，网关注入上游请求 |
 | `asr_service/runtime/api_key` | ASR 内部 key，网关在 WebSocket 握手时注入 |
 | `tts_service/runtime/api_key` | TTS 内部 key，网关注入上游请求 |
+| `monitor_service/runtime/api_key` | 监控内部 key，网关注入上游请求 |
 | `gateway/runtime/tls/server.crt` | 可传给 CPU 客户端信任的开发证书 |
 | `gateway/runtime/tls/server.key` | 留在 GPU 主机的 TLS 私钥 |
 
@@ -61,6 +62,7 @@ bash vlm_service/scripts/bootstrap.sh
 bash rag_service/scripts/bootstrap.sh
 bash asr_service/scripts/bootstrap.sh
 bash tts_service/scripts/bootstrap.sh
+python3 monitor_service/scripts/service.py check
 ```
 
 VLM 模型路径见 `vlm_service/config/server.json`。统一管理目前按本机分配固定 GPU 0 给 YOLO、GPU 1 给 VLM，
@@ -85,11 +87,13 @@ python3 gateway/service.py stop --service asr
 python3 gateway/service.py start --service asr
 python3 gateway/service.py stop --service tts
 python3 gateway/service.py start --service tts
+python3 gateway/service.py stop --service monitor
+python3 gateway/service.py start --service monitor
 python3 gateway/service.py reload --service gateway
 python3 gateway/service.py stop
 ```
 
-六个服务进程组各有独立日志和状态记录。启动时模型可能仍在加载；网关可以先服务其他已就绪算法。
+七个服务进程组各有独立日志和状态记录。启动时模型可能仍在加载；网关可以先服务其他已就绪算法。
 `reload` 只重载网关：先验证候选配置，通过后原子替换配置并发送 HUP。失败时保留原配置，
 不会重启算法进程。重载返回后仍需验证新路由；旧 worker 的最长退出等待为 10 秒。
 `managed` 表示本控制程序拥有该后台进程，`ready` 表示相应接口检查通过，两者分别报告。
@@ -99,7 +103,7 @@ python3 gateway/service.py stop
 
 开发后台模式没有自动恢复。需要开机自启和故障恢复的 systemd 主机，可以使用
 `deploy/gpu-algorithm@.service`，按实际安装路径和专用运行用户调整，保证其能读取模型和设备、拥有 runtime。
-分别启用 `gpu-algorithm@gateway`、`gpu-algorithm@yolo`、`gpu-algorithm@vlm`、`gpu-algorithm@rag`、`gpu-algorithm@asr` 和 `gpu-algorithm@tts` 实例。
+分别启用 `gpu-algorithm@gateway`、`gpu-algorithm@yolo`、`gpu-algorithm@vlm`、`gpu-algorithm@rag`、`gpu-algorithm@asr`、`gpu-algorithm@tts` 和 `gpu-algorithm@monitor` 实例。
 模板的 `run --service ...` 在前台运行对应进程，由 systemd 独立重启；容器中使用现有容器平台监督这些前台命令。
 
 ## 路由行为
@@ -112,6 +116,7 @@ python3 gateway/service.py stop
 - ASR 路由关闭代理缓冲，空闲读取超时 3600 秒，最多 4 个活跃长连接；不公开文件转写路径。
 - `/tts/v1/audio/speech` 映射到 TTS 同名路径，关闭响应缓冲并保留 PCM 分块；`/tts/v1/audio/voices` 列出预置音色。
 - TTS 请求体上限 16 KiB、最多 1 个活跃请求、上游空闲读取超时 600 秒；不公开 docs、metrics 或音色克隆路径。
+- `/monitor/v1/overview` 返回每 5 秒更新的快照；`refresh=true` 等待立即采样，入口最多 8 个并发请求。内部算法 metrics 路径仍不公开。
 - `/detector.v1.Detector/Detect` 保留 gRPC 消息、状态尾部、帧级错误和双向流。
 - 其余算法路径返回 404，管理和 metrics 接口不被通配转发。
 - HTTP 入口无/错 key 返回 401；gRPC 客户端得到 `UNAUTHENTICATED`。
@@ -130,7 +135,7 @@ python3 gateway/service.py stop
 
 ## CPU 客户端
 
-五个算法的 `cpu_client/` 都有 `config.gateway.example.json`。将 `GPU_HOST` 替换成实际 GPU 地址，
+五个算法和监控的 `cpu_client/` 都有 `config.gateway.example.json`。将 `GPU_HOST` 替换成实际 GPU 地址，
 将服务器证书放到配置文件旁，设置同一个 `GPU_API_KEY`。`ca_file` 相对配置文件解析，
 `GPU_CA_FILE` 可覆盖它，建议使用绝对路径。使用系统信任的证书时可删除 `ca_file` 配置。
 VLM 的旧 `VLM_API_KEY`、YOLO 的旧 `DETECTOR_AUTH_TOKEN` 仍作为未设置 `GPU_API_KEY` 时的兼容项。
@@ -140,6 +145,7 @@ YOLO 示例：`python demo.py --config config.gateway.example.json`，先修改�
 RAG 示例：在 `rag_service/cpu_client/` 运行 `python demo.py --config config.gateway.example.json --text '示例文档片段'`。
 ASR 客户端用法见 `asr_service/cpu_client/README.md`；业务侧发送实时 PCM16 帧并并行读取识别事件。
 TTS 示例：在 `tts_service/cpu_client/` 运行 `python demo.py --config config.gateway.example.json --text '欢迎使用语音服务。'`。
+监控示例：在 `monitor_service/cpu_client/` 运行 `python demo.py --config config.json`；手动刷新增加 `--refresh`。
 CPU Web 后端负责向浏览器流式转发；在 CPU 一侧还有 NGINX 时，其流式路由也要关闭响应缓冲。
 
 ## 验收

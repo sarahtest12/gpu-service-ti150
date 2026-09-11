@@ -62,6 +62,10 @@ python3 gateway/service.py start --service tts
 | GET | `/tts/v1/audio/voices` | 列出允许使用的预置音色 |
 | GET | `/tts/health/ready` | TTS 就绪状态 |
 
+内部 `/metrics` 发布 `tts_time_to_first_token_seconds` 直方图。每个 HTTP 合成请求只记录首次
+语音 token，从语音 token 解码器开始工作到第一次产出；它不等于首段 PCM 到达时间。
+该路径要求 TTS 内部 key，统一网关不直接公开，仅由本机监控服务采集。
+
 合成请求：
 
 ```json

@@ -1,0 +1,5 @@
+{
+  "base_url": "https://GPU_HOST:8443",
+  "ca_file": "server.crt",
+  "timeout_seconds": 12
+}

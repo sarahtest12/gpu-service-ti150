@@ -1,0 +1,10 @@
+{
+  "host": "127.0.0.1",
+  "port": 8005,
+  "gateway_config": "../../gateway/config/server.json",
+  "sample_interval_seconds": 5,
+  "window_seconds": 60,
+  "stale_after_seconds": 15,
+  "upstream_timeout_seconds": 3,
+  "ixsmi": "/usr/local/corex/bin/ixsmi"
+}

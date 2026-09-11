@@ -1,0 +1,2 @@
+# CPU-only dependency for the Web backend.
+httpx==0.28.1

@@ -4,7 +4,7 @@ CPU 服务器部署 Web 应用与业务逻辑，GPU 主机通过统一 HTTPS 入
 所有已接入算法共用一个对外端口和 `GPU_API_KEY`，按路径分发；不设置调用方 IP 或域名白名单。
 
 接口 review 入口见 [契约总览](contracts/README.md)：包含 OpenAPI 3.1.1、YOLO gRPC 契约说明，
-并区分已实现接口、监控设计和尚未实现的预留路径。
+并区分已实现接口和尚未实现的预留路径。
 
 | 能力 | GPU 主机对外接口 | 内部地址 |
 | --- | --- | --- |
@@ -16,6 +16,7 @@ CPU 服务器部署 Web 应用与业务逻辑，GPU 主机通过统一 HTTPS 入
 | ASR 实时语音识别 | `wss://GPU_HOST:8443/asr/v1/realtime`，模型 `Fun-ASR-Nano-2512` | `127.0.0.1:8003` |
 | TTS 流式语音合成 | `/tts/v1/audio/speech`，模型 `cosyvoice-300m-instruct` | `127.0.0.1:8004` |
 | TTS 预置音色 | `/tts/v1/audio/voices` | 同上 |
+| 性能监控快照 | `/monitor/v1/overview` | `127.0.0.1:8005` |
 | 服务状态 | `/health/live` 及各算法 `/算法名/health/ready` | 由网关分别检查 |
 
 状态接口也需要统一 key。RAG 当前提供 BGE-M3 的 1024 维文本向量，不部署 reranker；
@@ -26,8 +27,8 @@ MP3/WAV 编码。普通 HTTP 单图接口和 `/rag/v1/rerank` 尚未实现，当
 ## 部署与管理
 
 1. 按 [网关说明](gateway/README.md) 构建 NGINX、配置证书和初始化凭据。
-2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md)、[ASR 说明](asr_service/README.md) 和 [TTS 说明](tts_service/README.md) 准备各自环境与模型。
-3. 从仓库根目录统一管理网关与五个算法服务，共六个独立进程组：
+2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md)、[ASR 说明](asr_service/README.md)、[TTS 说明](tts_service/README.md) 和 [监控说明](monitor_service/README.md) 准备各自服务。
+3. 从仓库根目录统一管理网关、五个算法服务和监控，共七个独立进程组：
 
 ```bash
 python3 gateway/service.py start
@@ -36,7 +37,7 @@ python3 gateway/service.py stop
 ```
 
 `start` 返回表示进程正在启动，`status` 中各项 `ready: true` 才表示对应接口就绪。
-也可加 `--service gateway`、`--service yolo`、`--service vlm`、`--service rag`、`--service asr` 或 `--service tts` 独立操作；一个模型未就绪不会阻止网关转发另一个。
+也可加 `--service gateway`、`--service yolo`、`--service vlm`、`--service rag`、`--service asr`、`--service tts` 或 `--service monitor` 独立操作；一个模型未就绪不会阻止网关转发另一个。
 新增路由可用 `python3 gateway/service.py reload --service gateway` 检查配置并重载已运行的网关。
 后台开发模式没有自动恢复；生产 systemd 的独立进程管理模板见网关说明。
 
@@ -53,5 +54,6 @@ CPU 端复制需要的算法 `cpu_client/`；YOLO 还需复制同级 `shared/`�
 
 VLM 使用 `VlmClient.stream_chat()` 或 `demo.py --stream` 逐段读取输出；
 ASR 使用 `RealtimeAsrClient` 发送麦克风 PCM 帧并同时读取可修订 partial 与 final；
+监控使用 `MonitorClient.overview()` 读取定时快照，页面手动刷新时传 `refresh=True`；
 CPU Web 后端和浏览器也需逐段转发/读取，算法 key 仅保存在 CPU 后端。
 前后端应用与业务数据权限管理由 CPU 项目实现。

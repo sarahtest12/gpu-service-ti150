@@ -36,6 +36,16 @@ WebSocket Upgrade。完整文件转写路径经验证返回 404。详细结果�
 封装为有效 WAV。详细运行时、显存和限制见
 [`../../tts_service/docs/validation.md`](../../tts_service/docs/validation.md)。
 
+## 五服务监控增量验收
+
+2026-09-11 增加独立监控进程后，网关、五个算法和监控共七个进程组均为
+`managed: true`、`ready: true`。网关协议测试扩展为 15 项，新增验证公共 key 被替换为监控内部
+key、`refresh=true` 查询参数保留、`Cache-Control: no-store` 和方法限制。
+
+真实入口 `/monitor/v1/overview?refresh=true` 返回五个 `running` 服务。显存能同时归属 ASR/RAG/VLM
+的 vLLM EngineCore 子进程；YOLO、VLM、RAG、ASR、TTS 的 60 秒耗时均通过各自真实请求产生并返回。
+完整字段和值记录在 [`../../contracts/validation.md`](../../contracts/validation.md)。
+
 ## 首次网关验收结果（历史）
 
 | 验证 | 结果 |
@@ -84,7 +94,7 @@ python -m unittest discover -s gateway/tests -p test_gateway.py -v
 ```bash
 python3 gateway/service.py start
 python3 gateway/service.py status
-# 等待六个服务均 ready: true 后：
+# 等待七个服务均 ready: true 后：
 source yolov5v70-service/scripts/corex_env.sh
 RUN_GATEWAY_INTEGRATION=1 python -m unittest discover -s gateway/tests -p test_live_gateway.py -v
 ```
