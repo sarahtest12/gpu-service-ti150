@@ -2,7 +2,9 @@
 
 import os
 from pathlib import Path
+import json
 import ssl
+import subprocess
 import sys
 import time
 import unittest
@@ -10,6 +12,7 @@ import unittest
 import grpc
 import httpx
 from PIL import Image
+from websockets.sync.client import connect as websocket_connect
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(REPO / "gateway"), str(REPO / "vlm_service/cpu_client"),
@@ -31,7 +34,9 @@ class LiveGatewayTest(unittest.TestCase):
 
     def test_models_health_and_authentication(self):
         with httpx.Client(verify=ssl.create_default_context(cafile=str(self.ca_file)), trust_env=False) as client:
-            for path in ("/vlm/v1/models", "/health/live", "/vlm/health/ready", "/yolo/health/ready"):
+            for path in ("/vlm/v1/models", "/rag/v1/models", "/health/live",
+                         "/vlm/health/ready", "/yolo/health/ready",
+                         "/rag/health/ready", "/asr/health/ready"):
                 self.assertEqual(client.get(self.base + path).status_code, 401)
                 response = client.get(self.base + path, headers={"Authorization": "Bearer " + self.key})
                 self.assertEqual(response.status_code, 200)
@@ -72,6 +77,33 @@ class LiveGatewayTest(unittest.TestCase):
                 self.assertGreater(len(parts), 1)
                 self.assertEqual(finish, "stop")
                 self.assertIsNotNone(usage)
+
+    def test_real_asr_stream_on_same_port(self):
+        sample = Path("/share/fshare/common/models/FunAudioLLM/Fun-ASR-Nano-2512/example/zh.mp3")
+        pcm = subprocess.run([
+            "ffmpeg", "-v", "error", "-i", str(sample), "-f", "s16le",
+            "-ac", "1", "-ar", "16000", "pipe:1",
+        ], check=True, capture_output=True).stdout
+        context = ssl.create_default_context(cafile=str(self.ca_file))
+        events = []
+        with websocket_connect(
+            "wss://" + self.target + "/asr/v1/realtime", ssl=context, proxy=None,
+            additional_headers={"Authorization": "Bearer " + self.key}, compression=None,
+        ) as connection:
+            connection.send("START")
+            self.assertEqual(json.loads(connection.recv()), {"event": "started"})
+            for offset in range(0, len(pcm), 3200):
+                connection.send(pcm[offset:offset + 3200])
+                time.sleep(0.1)
+            connection.send("STOP")
+            while True:
+                event = json.loads(connection.recv())
+                events.append(event)
+                if event.get("event") == "stopped":
+                    break
+        self.assertTrue(any(event.get("partial") for event in events))
+        final = next(event for event in events if event.get("is_final"))
+        self.assertIn("九点", "".join(sentence["text"] for sentence in final["sentences"]))
 
 
 if __name__ == "__main__":

@@ -1,0 +1,26 @@
+{
+  "model": "/share/fshare/common/models/FunAudioLLM/Fun-ASR-Nano-2512",
+  "model_sha256": "81fec8616083c69377f3ceef36aba3655660ee0ca69a5d4a1e9810cd340ca499",
+  "funasr_revision": "e42443f55971d0c804dcf2973fdd2e6e09bd5611",
+  "device": 0,
+  "host": "127.0.0.1",
+  "port": 8003,
+  "dtype": "bf16",
+  "language": "中文",
+  "tensor_parallel_size": 1,
+  "gpu_memory_utilization": 0.2,
+  "max_model_len": 2048,
+  "decode_interval_seconds": 0.48,
+  "decode_batch_wait_ms": 10,
+  "decode_max_batch_size": 4,
+  "partial_window_seconds": 8,
+  "max_message_bytes": 1048576,
+  "ping_interval_seconds": 20,
+  "ping_timeout_seconds": 0,
+  "close_timeout_seconds": 10,
+  "vad_device": "cpu",
+  "vad_ncpu": 1,
+  "endpoint_mode": "server",
+  "enforce_eager": true
+}
+

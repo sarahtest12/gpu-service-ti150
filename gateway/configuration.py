@@ -37,7 +37,7 @@ def load(path):
         raise ValueError("probe_host must be a DNS name, IPv4 address or bracketed IPv6 address")
     for field in ("api_key_file", "certificate", "certificate_key"):
         cfg[field] = (path.parent / cfg[field]).resolve()
-    names = ["vlm", "yolo"] + (["rag"] if "rag" in cfg else [])
+    names = ["vlm", "yolo"] + [name for name in ("rag", "asr") if name in cfg]
     for name in names:
         route = cfg[name]
         address(route["address"])
@@ -102,6 +102,33 @@ def render(cfg, runtime):
             proxy_pass http://{rag['address']}{upstream};
         }}
 """
+    asr_locations, asr_zone = "", ""
+    if "asr" in cfg:
+        asr = cfg["asr"]
+        asr_key = secret(asr["api_key_file"])
+        keys.append(asr_key)
+        asr_zone = "limit_conn_zone $server_name zone=asr_slots:32k;"
+        asr_locations = f"""
+        location = /asr/v1/realtime {{
+            limit_except GET {{ deny all; }}
+            limit_conn asr_slots {asr['max_connections']};
+            proxy_set_header Authorization {quoted('Bearer ' + asr_key)};
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_read_timeout {asr['read_timeout_seconds']}s;
+            proxy_send_timeout {asr['read_timeout_seconds']}s;
+            proxy_buffering off;
+            proxy_pass http://{asr['address']}/realtime;
+        }}
+        location = /asr/health/ready {{
+            limit_except GET {{ deny all; }}
+            proxy_set_header Authorization {quoted('Bearer ' + asr_key)};
+            proxy_set_header Upgrade "";
+            proxy_set_header Connection "";
+            proxy_read_timeout 3s;
+            proxy_pass http://{asr['address']}/health;
+        }}
+"""
     if len(set(keys)) != len(keys):
         raise ValueError("public and internal credentials must be distinct")
     if not cfg["certificate"].is_file() or not cfg["certificate_key"].is_file():
@@ -128,9 +155,11 @@ http {{
     log_format gateway '$request_id $request_method $uri $status $upstream_status $request_time';
     access_log {quoted(runtime / 'access.log')} gateway;
     map $http_authorization $auth_failed {{ default 1; {quoted(pattern)} 0; }}
+    map $http_upgrade $connection_upgrade {{ default upgrade; '' close; }}
     limit_conn_zone $server_name zone=vlm_slots:32k;
     limit_conn_zone $server_name zone=yolo_slots:32k;
     {rag_zone}
+    {asr_zone}
     limit_conn_status 429;
     server {{
         listen {host}:{cfg['listen_port']} ssl;
@@ -180,6 +209,7 @@ http {{
             proxy_pass http://{yolo['health_address']}/health/ready;
         }}
         {rag_locations}
+        {asr_locations}
         location = /detector.v1.Detector/Detect {{
             limit_except POST {{ deny all; }}
             client_max_body_size 0;

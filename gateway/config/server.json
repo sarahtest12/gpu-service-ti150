@@ -19,6 +19,12 @@
     "max_connections": 4,
     "read_timeout_seconds": 60
   },
+  "asr": {
+    "address": "127.0.0.1:8003",
+    "api_key_file": "../../asr_service/runtime/api_key",
+    "max_connections": 4,
+    "read_timeout_seconds": 3600
+  },
   "yolo": {
     "address": "127.0.0.1:50051",
     "health_address": "127.0.0.1:8081",

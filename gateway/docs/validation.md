@@ -11,7 +11,18 @@ NGINX 1.30.4。测试入口为 `https://localhost:8443`，使用开发证书和�
 原有 3 项网关真实模型验收通过，RAG 新增 6 项真实接口验收通过。
 RAG 与 YOLO、VLM 共存及 RAG 独立停启验证通过，详见
 [`../../rag_service/docs/validation.md`](../../rag_service/docs/validation.md)。
-本次结束后四个服务保持运行。下面“全部停止”的描述是首次网关验收时的历史状态。
+加入 ASR 后五个服务保持运行。下面“全部停止”的描述是首次网关验收时的历史状态。
+
+## Fun-ASR-Nano 实时接口增量验收
+
+同日部署 Fun-ASR-Nano-2512 后，五个服务进程组均保持 `ready: true`。网关协议测试增加
+WebSocket 用例后为 13 项，验证了 TLS 升级、公共 key 替换为 ASR 内部 key、partial/final
+双向消息、ASR 独立并发限制、健康检查和错误公共 key。
+
+真实模型使用 100 ms PCM16 帧回放 5.616 秒样例，约 2.15 秒出现首个非空 partial，结束后返回
+“开饭时间早上九点至下午五点。”以及 420–5610 ms 时间范围。NGINX 关闭 ASR 代理缓冲并保持
+WebSocket Upgrade。完整文件转写路径经验证返回 404。详细结果见
+[`../../asr_service/docs/validation.md`](../../asr_service/docs/validation.md)。
 
 ## 首次网关验收结果（历史）
 
@@ -56,12 +67,12 @@ source yolov5v70-service/scripts/corex_env.sh
 python -m unittest discover -s gateway/tests -p test_gateway.py -v
 ```
 
-真实模型验收使用已经运行的三个进程，不另起模型实例：
+真实模型验收使用已经运行的进程，不另起模型实例：
 
 ```bash
 python3 gateway/service.py start
 python3 gateway/service.py status
-# 等待三个服务均 ready: true 后：
+# 等待五个服务均 ready: true 后：
 source yolov5v70-service/scripts/corex_env.sh
 RUN_GATEWAY_INTEGRATION=1 python -m unittest discover -s gateway/tests -p test_live_gateway.py -v
 ```
@@ -114,4 +125,5 @@ YOLO 独立虚拟环境已建立，官方 v7.0 权重下载后通过仓库指定
 开发凭据、证书、模型、编译输出与私密运行日志均在 Git 忽略范围内。
 
 未安装或启用 systemd 单元；提供的是需要按实际部署路径、用户调整的模板。
-RAG、ASR、TTS 与 YOLO HTTP 单图路由尚未实现，当前不会伪装成可用服务。
+RAG rerank、TTS 与 YOLO HTTP 单图路由尚未实现，当前不会伪装成可用服务。
+ASR 仅部署实时 WebSocket，不提供完整文件转写路由。

@@ -50,3 +50,20 @@ python3 -m venv /tmp/gpu-contract-review
 `/monitor/v1/overview` 继续保持 proposed；`/rag/v1/rerank` 继续预留并返回 404。
 没有新增监控聚合、重排序、ASR 或 TTS 实现。
 完整运行结果见 [`rag_service/docs/validation.md`](../rag_service/docs/validation.md)。
+
+## Fun-ASR-Nano 实时接口增量
+
+同日新增 `/asr/health/ready` 和 `/asr/v1/realtime`。OpenAPI 描述健康接口与 WebSocket 握手，
+双向消息单列在 [`asr-websocket.md`](asr-websocket.md)；删除了完整文件转写预留路径。
+当前契约版本为 `0.3.0-review`。
+
+| 校验 | 结果 |
+| --- | --- |
+| `openapi-spec-validator==0.7.2` | 通过 |
+| NGINX 配置语法及路由生成 | 通过 |
+| 真实 NGINX + TLS + HTTP/SSE/WebSocket/gRPC 测试 | 13 项通过 |
+| 真实 ASR WebSocket | partial、final、时间范围和 stopped 均通过 |
+| 鉴权边界 | 公共入口缺 key 为 401；内部健康检查缺内部 key 为 401 |
+| 不提供文件转写 | `/asr/v1/audio/transcriptions` 返回 404 |
+
+ASR 真实行为与显存快照见 [`asr_service/docs/validation.md`](../asr_service/docs/validation.md)。

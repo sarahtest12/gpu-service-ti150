@@ -1,6 +1,6 @@
 # 算法服务契约 Review
 
-初始 VLM/YOLO 契约基线为 `88bb84a`（add gateway）。随后已部署 BGE-M3，并增加 RAG 的三个公开接口。
+初始 VLM/YOLO 契约基线为 `88bb84a`（add gateway）。随后已部署 BGE-M3 和 Fun-ASR-Nano-2512。
 监控部分继续保留已确认的设计，尚未实现；重排序模型暂不部署。
 
 优先 review [`openapi.yaml`](openapi.yaml)。它是可导入 OpenAPI 工具的 **3.1.1** 单文件，
@@ -8,6 +8,7 @@
 `x-implementation-status` 和操作摘要区分实现状态；实现状态不等于进程当前运行状态。
 YOLO 的原生双向流使用 [现有 detector.proto](../yolov5v70-service/shared/detector_contract/detector.proto)，
 输入、输出、限制与错误语义另见 [`yolo-grpc.md`](yolo-grpc.md)。
+ASR 的握手和健康检查在 OpenAPI 中，双向消息语义见 [`asr-websocket.md`](asr-websocket.md)。
 
 ## 对外接口清单
 
@@ -24,10 +25,11 @@ YOLO 的原生双向流使用 [现有 detector.proto](../yolov5v70-service/share
 | HTTP GET | `/rag/v1/models` | 向量模型列表 | 已实现 |
 | HTTP POST | `/rag/v1/embeddings` | BGE-M3 文本向量编码 | 已实现 |
 | HTTP POST | `/rag/v1/rerank` | 检索重排 | 预留路径，当前 404 |
-| HTTP POST | `/asr/v1/audio/transcriptions` | 语音识别 | 预留路径，当前 404 |
+| WebSocket | `/asr/v1/realtime` | Fun-ASR-Nano 实时语音识别 | 已实现；消息契约单列 |
+| HTTP GET | `/asr/health/ready` | ASR 引擎就绪 | 已实现 |
 | HTTP POST | `/tts/v1/audio/speech` | 语音合成 | 预留路径，当前 404 |
 
-RAG rerank、ASR、TTS 记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
+RAG rerank、TTS 记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
 YOLO 普通 HTTP 单图接口也尚未定义。监控的 RAG 耗时字段只是观测口径，不意味着已有 RAG 推理接口。
 
 统一目标为 `https://GPU_HOST:8443`，gRPC 客户端 target 为 `GPU_HOST:8443`。
@@ -130,6 +132,8 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 | `127.0.0.1:8002` | `/health` | RAG 健康检查；空响应体，本机无需 key |
 | `127.0.0.1:8002` | `/v1/models`、`/v1/embeddings` | RAG 内部 key，对应公共 RAG 契约 |
 | `127.0.0.1:8002` | `/metrics` | vLLM 内部诊断指标；不转发到统一网关 |
+| `127.0.0.1:8003` | `/health` | ASR JSON 健康检查，使用 ASR 内部 key |
+| `127.0.0.1:8003` | `/realtime` | 实时 ASR WebSocket，使用 ASR 内部 key |
 
 厂商 vLLM 包中其他管理、tokenize 或文档路由没有被网关转发，不属于本项目对 CPU 的支持契约。
 
@@ -139,7 +143,7 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 也可以直接看 YAML 的 `paths`，再按 `$ref` 找到对应输入输出结构。
 不要根据 `proposed` 操作生成“已上线”列表；预留接口的请求/响应需要另行设计。
 
-初始契约与 RAG 增量校验结果记录在 [`validation.md`](validation.md)。
+初始契约、RAG 与 ASR 增量校验结果记录在 [`validation.md`](validation.md)。
 
 描述规范依据：[OpenAPI 3.1.1](https://spec.openapis.org/oas/v3.1.1.html)；
 gRPC 双向流语义依据：[gRPC 核心概念](https://grpc.io/docs/what-is-grpc/core-concepts/)。

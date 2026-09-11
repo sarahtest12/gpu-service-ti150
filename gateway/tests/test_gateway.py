@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from http import HTTPStatus
 import json
 from pathlib import Path
 import socket
@@ -16,6 +17,9 @@ from unittest.mock import patch
 
 import grpc
 import httpx
+from websockets.exceptions import InvalidStatus
+from websockets.sync.client import connect as websocket_connect
+from websockets.sync.server import serve as websocket_serve
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path[:0] = [str(REPO / "gateway"), str(REPO / "vlm_service/cpu_client"),
@@ -58,6 +62,7 @@ class GatewayTest(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.http_requests = []
         self.grpc_metadata = []
+        self.asr_headers = []
         self.stream_mode = "normal"
         self.http_status = 200
         self.rag_status = 200
@@ -139,6 +144,43 @@ class GatewayTest(unittest.TestCase):
         self.http_thread.start()
         self.addCleanup(self.close_http)
 
+        def asr_process_request(connection, request):
+            fixture.asr_headers.append(dict(request.headers))
+            expected = "Bearer " + secret(fixture.cfg["asr"]["api_key_file"])
+            if request.headers.get("Authorization") != expected:
+                return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+            if request.path == "/health":
+                response = connection.respond(HTTPStatus.OK, '{"status":"ok"}\n')
+                response.headers["Content-Type"] = "application/json"
+                return response
+            if request.path != "/realtime":
+                return connection.respond(HTTPStatus.NOT_FOUND, "not found\n")
+            return None
+
+        def asr_handler(connection):
+            for message in connection:
+                if message == "START":
+                    connection.send('{"event":"started"}')
+                elif isinstance(message, bytes):
+                    connection.send('{"sentences":[],"partial":"测试","partial_start_ms":0,'
+                                    '"duration_ms":100,"is_final":false}')
+                elif message == "STOP":
+                    connection.send('{"sentences":[{"text":"测试","start":0,"end":100}],'
+                                    '"partial":"","partial_start_ms":0,"duration_ms":100,'
+                                    '"is_final":true}')
+                    connection.send('{"event":"stopped"}')
+
+        self.asr_socket = socket.socket()
+        self.asr_socket.bind(("127.0.0.1", 0))
+        self.asr_socket.listen()
+        self.asr_port = self.asr_socket.getsockname()[1]
+        self.asr_server = websocket_serve(asr_handler, sock=self.asr_socket,
+                                          process_request=asr_process_request,
+                                          compression=None, server_header=None)
+        self.asr_thread = threading.Thread(target=self.asr_server.serve_forever, daemon=True)
+        self.asr_thread.start()
+        self.addCleanup(self.close_asr)
+
         class DetectorFixture(detector_pb2_grpc.DetectorServicer):
             def Detect(self, requests, context):
                 metadata = dict(context.invocation_metadata())
@@ -170,11 +212,15 @@ class GatewayTest(unittest.TestCase):
             "rag": {"address": f"127.0.0.1:{self.http_server.server_port}",
                     "api_key_file": self.root / "rag_key", "max_body_bytes": 512,
                     "max_connections": 1, "read_timeout_seconds": 2},
+            "asr": {"address": f"127.0.0.1:{self.asr_port}",
+                    "api_key_file": self.root / "asr_key",
+                    "max_connections": 1, "read_timeout_seconds": 2},
             "yolo": {"address": f"127.0.0.1:{grpc_port}",
                      "health_address": f"127.0.0.1:{self.http_server.server_port}",
                      "api_key_file": self.root / "yolo_key", "max_connections": 1, "read_timeout_seconds": 2},
         }
-        for path in (self.cfg["api_key_file"], *(self.cfg[n]["api_key_file"] for n in ("vlm", "yolo", "rag"))):
+        for path in (self.cfg["api_key_file"],
+                     *(self.cfg[n]["api_key_file"] for n in ("vlm", "yolo", "rag", "asr"))):
             secret(path, create=True)
         self.key = secret(self.cfg["api_key_file"])
         config = self.root / "nginx.conf"
@@ -213,6 +259,10 @@ class GatewayTest(unittest.TestCase):
         self.http_server.server_close()
         self.http_thread.join(timeout=2)
 
+    def close_asr(self):
+        self.asr_server.shutdown()
+        self.asr_thread.join(timeout=2)
+
     def detector(self, token=None, trusted=True):
         return DetectorClient(f"localhost:{self.port}", token=self.key if token is None else token,
                               tls=True, root_certificates=self.cert.read_bytes() if trusted else None,
@@ -224,6 +274,15 @@ class GatewayTest(unittest.TestCase):
     def frame(self, number):
         return frame_from_jpeg(b"jpeg", width=1, height=1, stream_id="gateway-test", frame_id=number,
                                source_pts=90000, time_base_num=1, time_base_den=90000)
+
+    def asr(self, token=None):
+        context = ssl.create_default_context(cafile=str(self.cert))
+        return websocket_connect(
+            self.url.replace("https://", "wss://") + "/asr/v1/realtime",
+            ssl=context, additional_headers={"Authorization": "Bearer " +
+                                             (self.key if token is None else token)},
+            proxy=None, compression=None, open_timeout=2,
+        )
 
     def test_same_port_key_routes_both_protocols_and_replaces_internal_credentials(self):
         response = self.http.get("/vlm/v1/models", headers={"X-Request-ID": "spoofed"})
@@ -350,6 +409,34 @@ class GatewayTest(unittest.TestCase):
         self.assertEqual(self.http.post("/rag/v1/embeddings", json={"input": "hello"}).status_code, 503)
         self.assertEqual(self.http.get("/health/live").status_code, 200)
         self.assertEqual(self.http.get("/vlm/v1/models").status_code, 200)
+
+    def test_asr_websocket_streams_and_replaces_the_public_credential(self):
+        with self.asr() as connection:
+            connection.send("START")
+            self.assertEqual(json.loads(connection.recv()), {"event": "started"})
+            with self.assertRaises(InvalidStatus) as limited:
+                with self.asr():
+                    pass
+            self.assertEqual(limited.exception.response.status_code, 429)
+            connection.send(b"\x00\x00" * 1600)
+            partial = json.loads(connection.recv())
+            self.assertEqual((partial["partial"], partial["is_final"]), ("测试", False))
+            connection.send("STOP")
+            self.assertTrue(json.loads(connection.recv())["is_final"])
+            self.assertEqual(json.loads(connection.recv()), {"event": "stopped"})
+        expected = "Bearer " + secret(self.cfg["asr"]["api_key_file"])
+        upstream_authorization = next(
+            value for name, value in self.asr_headers[-1].items()
+            if name.lower() == "authorization"
+        )
+        self.assertEqual(upstream_authorization, expected)
+        self.assertNotEqual(expected, "Bearer " + self.key)
+        self.assertEqual(self.http.get("/asr/health/ready").json(), {"status": "ok"})
+        self.assertEqual(self.http.post("/asr/v1/realtime").status_code, 403)
+        with self.assertRaises(InvalidStatus) as caught:
+            with self.asr(token="wrong"):
+                pass
+        self.assertEqual(caught.exception.response.status_code, 401)
 
     def test_failed_configuration_check_retains_last_valid_gateway_configuration(self):
         with patch.object(gateway_service, "RUNTIME", self.root):

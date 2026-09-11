@@ -1,0 +1,5 @@
+{
+  "url": "wss://GPU_HOST:8443/asr/v1/realtime",
+  "ca_file": "gpu-gateway.crt"
+}
+

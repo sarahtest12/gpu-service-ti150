@@ -13,18 +13,19 @@ CPU 服务器部署 Web 应用与业务逻辑，GPU 主机通过统一 HTTPS 入
 | YOLO 视频帧双向流 | gRPC `GPU_HOST:8443`，方法路径 `/detector.v1.Detector/Detect` | `127.0.0.1:50051` |
 | RAG 文本向量 | `/rag/v1/embeddings`，模型 `bge-m3` | `127.0.0.1:8002` |
 | RAG 模型列表 | `/rag/v1/models` | 同上 |
-| 服务状态 | `/health/live`、`/vlm/health/ready`、`/yolo/health/ready`、`/rag/health/ready` | 由网关分别检查 |
+| ASR 实时语音识别 | `wss://GPU_HOST:8443/asr/v1/realtime`，模型 `Fun-ASR-Nano-2512` | `127.0.0.1:8003` |
+| 服务状态 | `/health/live`、`/vlm/health/ready`、`/yolo/health/ready`、`/rag/health/ready`、`/asr/health/ready` | 由网关分别检查 |
 
 状态接口也需要统一 key。RAG 当前提供 BGE-M3 的 1024 维文本向量，不部署 reranker；
-文档分块、向量库、召回和权限由 CPU 项目实现。YOLO 保留原有 gRPC 契约；普通 HTTP 单图接口、ASR 和 TTS 尚未实现。
-规划的后续路径为 `/rag/v1/rerank`、`/asr/v1/audio/transcriptions`、
-`/tts/v1/audio/speech`；未实现的路径当前返回 404。
+文档分块、向量库、召回和权限由 CPU 项目实现。YOLO 保留原有 gRPC 契约；ASR 只提供实时
+WebSocket，不提供完整文件转写接口。普通 HTTP 单图接口和 TTS 尚未实现。规划的后续路径为
+`/rag/v1/rerank`、`/tts/v1/audio/speech`；未实现的路径当前返回 404。
 
 ## 部署与管理
 
 1. 按 [网关说明](gateway/README.md) 构建 NGINX、配置证书和初始化凭据。
-2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md) 和 [RAG 说明](rag_service/README.md) 准备各自环境与模型。
-3. 从仓库根目录统一管理网关、YOLO、VLM、RAG 四个独立服务进程组：
+2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md) 和 [ASR 说明](asr_service/README.md) 准备各自环境与模型。
+3. 从仓库根目录统一管理网关、YOLO、VLM、RAG、ASR 五个独立服务进程组：
 
 ```bash
 python3 gateway/service.py start
@@ -33,12 +34,12 @@ python3 gateway/service.py stop
 ```
 
 `start` 返回表示进程正在启动，`status` 中各项 `ready: true` 才表示对应接口就绪。
-也可加 `--service gateway`、`--service yolo`、`--service vlm` 或 `--service rag` 独立操作；一个模型未就绪不会阻止网关转发另一个。
+也可加 `--service gateway`、`--service yolo`、`--service vlm`、`--service rag` 或 `--service asr` 独立操作；一个模型未就绪不会阻止网关转发另一个。
 新增路由可用 `python3 gateway/service.py reload --service gateway` 检查配置并重载已运行的网关。
 后台开发模式没有自动恢复；生产 systemd 的独立进程管理模板见网关说明。
 
-网关配置位于 `gateway/config/server.json`。三个算法各用独立 Python 环境，网关不加载模型或 GPU 包。
-本机 YOLO 与 BGE-M3 使用 GPU 0，VLM 使用 GPU 1，模型共存能力以实测结果为准。
+网关配置位于 `gateway/config/server.json`。各算法使用独立 Python 环境，网关不加载模型或 GPU 包。
+本机 YOLO、BGE-M3 与 Fun-ASR-Nano 使用 GPU 0，VLM 使用 GPU 1，模型共存能力以实测结果为准。
 `bi150/` 为厂商参考资料；实际运行包以项目环境检查结果为准。
 
 ## CPU 后端调用
@@ -49,5 +50,6 @@ CPU 端复制需要的算法 `cpu_client/`；YOLO 还需复制同级 `shared/`�
 `GPU_CA_FILE` 指向同一个绝对路径。只传递证书文件，不传递证书私钥或算法内部 key。
 
 VLM 使用 `VlmClient.stream_chat()` 或 `demo.py --stream` 逐段读取输出；
+ASR 使用 `RealtimeAsrClient` 发送麦克风 PCM 帧并同时读取可修订 partial 与 final；
 CPU Web 后端和浏览器也需逐段转发/读取，算法 key 仅保存在 CPU 后端。
 前后端应用与业务数据权限管理由 CPU 项目实现。

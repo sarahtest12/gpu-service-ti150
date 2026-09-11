@@ -35,6 +35,8 @@ def init(cfg, names):
     paths = [cfg["api_key_file"], cfg["vlm"]["api_key_file"], cfg["yolo"]["api_key_file"]]
     if "rag" in cfg:
         paths.append(cfg["rag"]["api_key_file"])
+    if "asr" in cfg:
+        paths.append(cfg["asr"]["api_key_file"])
     for path in paths:
         secret(path, create=True)
     cert, key = cfg["certificate"], cfg["certificate_key"]
@@ -83,7 +85,7 @@ def command_for(name, cfg):
     env = os.environ.copy()
     if name == "gateway":
         return prepare_gateway(cfg), env, ROOT
-    if name in ("vlm", "rag"):
+    if name in ("vlm", "rag", "asr"):
         if name not in cfg:
             raise ValueError(f"{name} is not configured")
         project = REPO / f"{name}_service"
@@ -189,8 +191,9 @@ def status(name, cfg):
         context.load_verify_locations(cafile=str(cfg["certificate"]))
         healthy = ready(f"https://{cfg['probe_host']}:{cfg['listen_port']}/health/live",
                         context, secret(cfg["api_key_file"]))
-    elif name in ("vlm", "rag"):
-        healthy = name in cfg and ready(f"http://{cfg[name]['address']}/health")
+    elif name in ("vlm", "rag", "asr"):
+        key = secret(cfg[name]["api_key_file"]) if name == "asr" and name in cfg else None
+        healthy = name in cfg and ready(f"http://{cfg[name]['address']}/health", key=key)
     else:
         healthy = ready(f"http://{cfg['yolo']['health_address']}/health/ready")
     return {"managed": bool(record), "ready": healthy, **(record or {})}
@@ -199,7 +202,7 @@ def status(name, cfg):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("init", "check", "reload", "start", "stop", "status", "run"))
-    parser.add_argument("--service", choices=("all", "gateway", "yolo", "vlm", "rag"), default="all")
+    parser.add_argument("--service", choices=("all", "gateway", "yolo", "vlm", "rag", "asr"), default="all")
     parser.add_argument("--name", action="append", default=[], help="GPU destination DNS/IP for a development certificate")
     args = parser.parse_args()
     os.umask(0o077)
@@ -224,7 +227,7 @@ def main():
             print("gateway: reload requested; verify readiness and the changed routes")
         elif args.action == "run":
             if args.service == "all":
-                raise ValueError("run needs --service gateway, yolo, vlm or rag")
+                raise ValueError("run needs --service gateway, yolo, vlm, rag or asr")
             if live_state(args.service):
                 raise RuntimeError("managed process already running")
             command, env, cwd = command_for(args.service, cfg)
@@ -232,7 +235,7 @@ def main():
             os.chdir(cwd)
             os.execvpe(command[0], command, env)
         else:
-            names = (["yolo", "vlm"] + (["rag"] if "rag" in cfg else []) + ["gateway"]
+            names = (["yolo", "vlm"] + [name for name in ("rag", "asr") if name in cfg] + ["gateway"]
                      if args.service == "all" else [args.service])
             if args.action == "status":
                 print(json.dumps({name: status(name, cfg) for name in names}, indent=2))

@@ -1,13 +1,14 @@
 openapi: 3.1.1
 info:
   title: BI-V150 算法服务接口契约（Review）
-  version: 0.2.0-review
+  version: 0.3.0-review
   description: |
-    CPU Web 后端访问 GPU 主机的统一 HTTP 契约。所有路径共用 HTTPS 端口和 GPU_API_KEY。
+    CPU Web 后端访问 GPU 主机的统一 HTTP/WebSocket 契约。所有路径共用 TLS 端口和 GPU_API_KEY。
     x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
     x-implementation-status=proposed 表示待实现的设计，当前请求该路径仍返回 404。
     本文件不启动服务、不发布路由，也不把未部署算法视为可用。
     YOLO 原生 gRPC 双向流由 x-grpc 指向的 detector.proto 定义；不转换为 JSON POST 接口。
+    ASR 的 WebSocket 握手在 paths 中定义，双向消息语义由 x-websocket 指向的文档定义。
     VLM 数据结构从本机锁定版本的 vLLM 协议模型导出。上游 schema 中出现的音频、视频等字段
     不代表本部署支持这些能力；本项目支持文本、图片、业务工具及其 SSE 输出，部署限制见操作描述。
 servers:
@@ -28,6 +29,8 @@ tags:
     description: 已实现的 Qwen3.5-9B 图文、工具及 SSE 调用。
   - name: RAG
     description: 已实现的 BGE-M3 文本稠密向量接口；暂不部署重排序模型。
+  - name: ASR
+    description: 已实现的 Fun-ASR-Nano-2512 实时 WebSocket 语音识别。
   - name: Monitor
     description: 已对齐口径的监控设计；当前未实现。
 x-grpc:
@@ -39,15 +42,23 @@ x-grpc:
   proto: ../yolov5v70-service/shared/detector_contract/detector.proto
   review_notes: ./yolo-grpc.md
   implementation_status: implemented
+x-websocket:
+  url: 'wss://{gpu_host}:{port}/asr/v1/realtime'
+  headers: {Authorization: 'Bearer <GPU_API_KEY>'}
+  audio: {encoding: PCM_S16LE, sample_rate_hz: 16000, channels: 1, recommended_frame_ms: 100}
+  streaming: bidirectional
+  message_contract: ./asr-websocket.md
+  implementation_status: implemented
 x-reserved-interfaces:
   - {method: POST, path: /rag/v1/rerank, status: reserved, current_http_status: 404}
-  - {method: POST, path: /asr/v1/audio/transcriptions, status: reserved, current_http_status: 404}
   - {method: POST, path: /tts/v1/audio/speech, status: reserved, current_http_status: 404}
 x-source:
-  repository_commit: 88bb84a
+  repository_base_commit: 6043dc7d2b41
+  working_tree_change: Fun-ASR-Nano-2512 realtime deployment
   gateway: ../gateway/configuration.py
   server_configuration: ../gateway/config/server.json
   rag_configuration: ../rag_service/config/server.json
+  asr_configuration: ../asr_service/config/server.json
   vlm_configuration: ../vlm_service/config/server.json
   vlm_version: 0.17.0+corex.4.5.0.rc.11.20260701
   schema_models:
@@ -122,6 +133,60 @@ paths:
             application/json:
               schema: {$ref: '#/components/schemas/YoloReadiness'}
               example: {status: unavailable}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+  /asr/health/ready:
+    get:
+      operationId: getAsrReadiness
+      tags: [Health, ASR]
+      summary: 实时 ASR 引擎是否就绪
+      x-implementation-status: implemented
+      description: 仅在音频编码器、服务端 VAD 和 vLLM 解码器全部加载后返回成功。
+      responses:
+        '200':
+          description: ASR 引擎就绪。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GatewayLiveness'}
+              example: {status: ok}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+  /asr/v1/realtime:
+    get:
+      operationId: connectAsrRealtime
+      tags: [ASR]
+      summary: 升级到实时语音识别 WebSocket
+      x-implementation-status: implemented
+      x-websocket-message-contract: ./asr-websocket.md
+      x-max-active-connections: 4
+      x-upstream-idle-timeout-seconds: 3600
+      description: |
+        必须发送 WebSocket Upgrade；升级后以二进制消息发送 16 kHz 单声道 PCM16，
+        以 JSON 文本消息接收可修订 partial 和最终句子。没有完整文件转写接口。
+      parameters:
+        - name: Upgrade
+          in: header
+          required: true
+          schema: {type: string, const: websocket}
+        - name: Connection
+          in: header
+          required: true
+          schema: {type: string}
+          example: Upgrade
+      responses:
+        '101':
+          description: WebSocket 协议升级成功；后续消息见 ASR WebSocket 契约。
+          headers:
+            Upgrade:
+              schema: {type: string, const: websocket}
+            Connection:
+              schema: {type: string}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '502': {$ref: '#/components/responses/BadGateway'}
         '504': {$ref: '#/components/responses/GatewayTimeout'}
   /vlm/v1/models:
     get:
