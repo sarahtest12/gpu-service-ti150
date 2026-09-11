@@ -14,18 +14,20 @@ CPU 服务器部署 Web 应用与业务逻辑，GPU 主机通过统一 HTTPS 入
 | RAG 文本向量 | `/rag/v1/embeddings`，模型 `bge-m3` | `127.0.0.1:8002` |
 | RAG 模型列表 | `/rag/v1/models` | 同上 |
 | ASR 实时语音识别 | `wss://GPU_HOST:8443/asr/v1/realtime`，模型 `Fun-ASR-Nano-2512` | `127.0.0.1:8003` |
-| 服务状态 | `/health/live`、`/vlm/health/ready`、`/yolo/health/ready`、`/rag/health/ready`、`/asr/health/ready` | 由网关分别检查 |
+| TTS 流式语音合成 | `/tts/v1/audio/speech`，模型 `cosyvoice-300m-instruct` | `127.0.0.1:8004` |
+| TTS 预置音色 | `/tts/v1/audio/voices` | 同上 |
+| 服务状态 | `/health/live` 及各算法 `/算法名/health/ready` | 由网关分别检查 |
 
 状态接口也需要统一 key。RAG 当前提供 BGE-M3 的 1024 维文本向量，不部署 reranker；
 文档分块、向量库、召回和权限由 CPU 项目实现。YOLO 保留原有 gRPC 契约；ASR 只提供实时
-WebSocket，不提供完整文件转写接口。普通 HTTP 单图接口和 TTS 尚未实现。规划的后续路径为
-`/rag/v1/rerank`、`/tts/v1/audio/speech`；未实现的路径当前返回 404。
+WebSocket，不提供完整文件转写接口。TTS 返回 22050 Hz 单声道 PCM16 流，不提供音色克隆或
+MP3/WAV 编码。普通 HTTP 单图接口和 `/rag/v1/rerank` 尚未实现，当前返回 404。
 
 ## 部署与管理
 
 1. 按 [网关说明](gateway/README.md) 构建 NGINX、配置证书和初始化凭据。
-2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md) 和 [ASR 说明](asr_service/README.md) 准备各自环境与模型。
-3. 从仓库根目录统一管理网关、YOLO、VLM、RAG、ASR 五个独立服务进程组：
+2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md)、[ASR 说明](asr_service/README.md) 和 [TTS 说明](tts_service/README.md) 准备各自环境与模型。
+3. 从仓库根目录统一管理网关与五个算法服务，共六个独立进程组：
 
 ```bash
 python3 gateway/service.py start
@@ -34,7 +36,7 @@ python3 gateway/service.py stop
 ```
 
 `start` 返回表示进程正在启动，`status` 中各项 `ready: true` 才表示对应接口就绪。
-也可加 `--service gateway`、`--service yolo`、`--service vlm`、`--service rag` 或 `--service asr` 独立操作；一个模型未就绪不会阻止网关转发另一个。
+也可加 `--service gateway`、`--service yolo`、`--service vlm`、`--service rag`、`--service asr` 或 `--service tts` 独立操作；一个模型未就绪不会阻止网关转发另一个。
 新增路由可用 `python3 gateway/service.py reload --service gateway` 检查配置并重载已运行的网关。
 后台开发模式没有自动恢复；生产 systemd 的独立进程管理模板见网关说明。
 

@@ -1,7 +1,7 @@
 openapi: 3.1.1
 info:
   title: BI-V150 算法服务接口契约（Review）
-  version: 0.3.0-review
+  version: 0.4.0-review
   description: |
     CPU Web 后端访问 GPU 主机的统一 HTTP/WebSocket 契约。所有路径共用 TLS 端口和 GPU_API_KEY。
     x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
@@ -31,6 +31,8 @@ tags:
     description: 已实现的 BGE-M3 文本稠密向量接口；暂不部署重排序模型。
   - name: ASR
     description: 已实现的 Fun-ASR-Nano-2512 实时 WebSocket 语音识别。
+  - name: TTS
+    description: 已实现的 CosyVoice-300M-Instruct 流式语音合成。
   - name: Monitor
     description: 已对齐口径的监控设计；当前未实现。
 x-grpc:
@@ -51,14 +53,14 @@ x-websocket:
   implementation_status: implemented
 x-reserved-interfaces:
   - {method: POST, path: /rag/v1/rerank, status: reserved, current_http_status: 404}
-  - {method: POST, path: /tts/v1/audio/speech, status: reserved, current_http_status: 404}
 x-source:
-  repository_base_commit: 6043dc7d2b41
-  working_tree_change: Fun-ASR-Nano-2512 realtime deployment
+  repository_base_commit: c023e63
+  working_tree_change: CosyVoice-300M-Instruct streaming TTS deployment
   gateway: ../gateway/configuration.py
   server_configuration: ../gateway/config/server.json
   rag_configuration: ../rag_service/config/server.json
   asr_configuration: ../asr_service/config/server.json
+  tts_configuration: ../tts_service/config/server.json
   vlm_configuration: ../vlm_service/config/server.json
   vlm_version: 0.17.0+corex.4.5.0.rc.11.20260701
   schema_models:
@@ -423,6 +425,105 @@ paths:
         '502': {$ref: '#/components/responses/BadGateway'}
         '504': {$ref: '#/components/responses/GatewayTimeout'}
         default: {$ref: '#/components/responses/UpstreamError'}
+  /tts/health/ready:
+    get:
+      operationId: getTtsReadiness
+      tags: [Health, TTS]
+      summary: CosyVoice TTS 是否就绪
+      x-implementation-status: implemented
+      description: 模型、TorchScript 与必要的前端组件全部加载并开始监听后返回成功。
+      responses:
+        '200':
+          description: TTS 模型就绪。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/GatewayLiveness'}
+              example: {status: ok}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+  /tts/v1/audio/voices:
+    get:
+      operationId: listTtsVoices
+      tags: [TTS]
+      summary: 获取允许使用的预置音色
+      x-implementation-status: implemented
+      responses:
+        '200':
+          description: 当前检查点中的 7 个预置音色。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TtsVoiceList'}
+              example:
+                object: list
+                data:
+                  - {id: 中文女, object: voice, language: Chinese}
+                  - {id: 中文男, object: voice, language: Chinese}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
+  /tts/v1/audio/speech:
+    post:
+      operationId: createTtsSpeech
+      tags: [TTS]
+      summary: 使用 CosyVoice 指令音色流式合成 PCM 音频
+      x-implementation-status: implemented
+      x-request-body-limit-bytes: 16384
+      x-max-active-requests: 1
+      x-upstream-idle-timeout-seconds: 600
+      description: |
+        请求一次提交完整文本，响应以 HTTP chunked 流持续返回 22050 Hz、单声道、
+        little-endian signed PCM16。客户端不得把 HTTP 分块边界当作音频帧边界；按连续 PCM
+        字节流播放或保存。成功响应通过 X-Audio-* 头明确编码参数，且不会提供 Content-Length。
+
+        当前仅支持模型 cosyvoice-300m-instruct、预置音色和模型级 stream=true；不支持参考音频
+        克隆、WAV/MP3 编码、非流式响应或流式变速。instructions 省略或为空时使用服务端的中性播报
+        指令。input 最多 2000 个 Unicode 字符，instructions 最多 500 个字符。网关和模型服务均
+        只允许 1 个活跃合成请求；超过限制返回 429。客户端取消后 CosyVoice v1 没有计算取消接口，
+        服务会在后台完成并清理该次生成，然后才接收下一次请求。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TtsSpeechRequest'}
+            example:
+              model: cosyvoice-300m-instruct
+              input: 欢迎使用语音服务。
+              voice: 中文女
+              instructions: 用自然、亲切的语气播报。
+              response_format: pcm
+              stream: true
+              speed: 1.0
+      responses:
+        '200':
+          description: 连续 PCM S16LE 字节流；HTTP 分块仅用于传输。
+          headers:
+            X-Request-ID: {$ref: '#/components/headers/RequestId'}
+            Cache-Control:
+              schema: {type: string, const: no-store}
+            X-Audio-Format:
+              schema: {type: string, const: pcm_s16le}
+            X-Audio-Sample-Rate:
+              schema: {type: string, const: '22050'}
+            X-Audio-Channels:
+              schema: {type: string, const: '1'}
+          content:
+            audio/pcm:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/TtsApplicationError'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/TtsApplicationError'}
+        '413': {$ref: '#/components/responses/PayloadTooLarge'}
+        '422': {$ref: '#/components/responses/TtsApplicationError'}
+        '429': {$ref: '#/components/responses/TooManyRequests'}
+        '500': {$ref: '#/components/responses/TtsApplicationError'}
+        '502': {$ref: '#/components/responses/BadGateway'}
+        '504': {$ref: '#/components/responses/GatewayTimeout'}
   /monitor/v1/overview:
     get:
       operationId: getMonitoringOverview
@@ -529,14 +630,14 @@ components:
         text/html:
           schema: {type: string}
     PayloadTooLarge:
-      description: NGINX 请求体超过当前配置的 24 MiB 限制。
+      description: NGINX 请求体超过该路由限制；VLM 24 MiB、RAG 256 KiB、TTS 16 KiB。
       headers:
         X-Request-ID: {$ref: '#/components/headers/RequestId'}
       content:
         text/html:
           schema: {type: string}
     TooManyRequests:
-      description: NGINX 的 VLM 并发数超过 4，或上游限流。不应自动重试生成请求。
+      description: NGINX 路由并发限制或上游限流；VLM 为 4，TTS 为 1。不应自动重试生成请求。
       headers:
         X-Request-ID: {$ref: '#/components/headers/RequestId'}
       content:
@@ -552,7 +653,7 @@ components:
         text/html:
           schema: {type: string}
     GatewayTimeout:
-      description: 上游等待超时，尚未开始响应时由 NGINX 返回 HTML；已开始的 SSE 可能直接断流。
+      description: 上游等待超时，尚未开始响应时由 NGINX 返回 HTML；已开始的 SSE 或 PCM 响应可能直接断流。
       headers:
         X-Request-ID: {$ref: '#/components/headers/RequestId'}
       content:
@@ -570,6 +671,17 @@ components:
           schema: {$ref: '#/components/schemas/Vlm_ErrorResponse'}
         text/plain:
           schema: {type: string}
+    TtsApplicationError:
+      description: TTS 请求校验、模型选择或服务执行失败；响应在音频头发送前才可能是 JSON。
+      headers:
+        X-Request-ID: {$ref: '#/components/headers/RequestId'}
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [detail]
+            properties:
+              detail: {}
   schemas:
     GatewayLiveness:
       type: object
@@ -583,6 +695,46 @@ components:
       required: [status]
       properties:
         status: {type: string, enum: [ok, unavailable]}
+    TtsSpeechRequest:
+      type: object
+      additionalProperties: false
+      required: [model, input, voice]
+      properties:
+        model: {type: string, const: cosyvoice-300m-instruct}
+        input:
+          type: string
+          minLength: 1
+          maxLength: 2000
+          pattern: '^(?!.*(?:<\||<endofprompt>))[\s\S]*$'
+        voice:
+          type: string
+          enum: [中文女, 中文男, 粤语女, 日语男, 英文女, 英文男, 韩语女]
+        instructions:
+          type: [string, 'null']
+          maxLength: 500
+          pattern: '^(?!.*(?:<\||<endofprompt>))[\s\S]*$'
+          description: 省略、null 或空白时使用服务端中性播报指令；不得包含分词器控制序列。
+        response_format: {type: string, const: pcm, default: pcm}
+        stream: {type: boolean, const: true, default: true}
+        speed: {type: number, const: 1.0, default: 1.0}
+    TtsVoiceList:
+      type: object
+      additionalProperties: false
+      required: [object, data]
+      properties:
+        object: {type: string, const: list}
+        data:
+          type: array
+          minItems: 1
+          items: {$ref: '#/components/schemas/TtsVoice'}
+    TtsVoice:
+      type: object
+      additionalProperties: false
+      required: [id, object, language]
+      properties:
+        id: {type: string, enum: [中文女, 中文男, 粤语女, 日语男, 英文女, 英文男, 韩语女]}
+        object: {type: string, const: voice}
+        language: {type: string, enum: [Chinese, Cantonese, Japanese, English, Korean]}
     MonitoringOverview:
       type: object
       additionalProperties: false

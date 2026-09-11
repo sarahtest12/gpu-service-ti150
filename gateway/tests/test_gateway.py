@@ -63,6 +63,8 @@ class GatewayTest(unittest.TestCase):
         self.http_requests = []
         self.grpc_metadata = []
         self.asr_headers = []
+        self.tts_started = threading.Event()
+        self.tts_pause = False
         self.stream_mode = "normal"
         self.http_status = 200
         self.rag_status = 200
@@ -77,7 +79,14 @@ class GatewayTest(unittest.TestCase):
         class HttpFixture(BaseHTTPRequestHandler):
             def do_GET(self):
                 fixture.http_requests.append((self.path, dict(self.headers), None))
-                body = json.dumps({"object": "list", "data": [{"id": "qwen3.5-9b"}]}).encode()
+                if self.path == "/v1/audio/voices":
+                    value = {"object": "list", "data": [{"id": "中文女", "object": "voice",
+                                                            "language": "Chinese"}]}
+                elif self.path == "/health":
+                    value = {"status": "ok"}
+                else:
+                    value = {"object": "list", "data": [{"id": "qwen3.5-9b"}]}
+                body = json.dumps(value, ensure_ascii=False).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -87,6 +96,25 @@ class GatewayTest(unittest.TestCase):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fixture.http_requests.append((self.path, dict(self.headers), body))
+                if self.path == "/v1/audio/speech":
+                    fixture.tts_started.set()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "audio/pcm")
+                    self.send_header("X-Audio-Format", "pcm_s16le")
+                    self.send_header("X-Audio-Sample-Rate", "22050")
+                    self.send_header("X-Audio-Channels", "1")
+                    self.send_header("X-Accel-Buffering", "yes")
+                    self.end_headers()
+                    try:
+                        self.wfile.write(b"\x01\x00\x02\x00")
+                        self.wfile.flush()
+                        if fixture.tts_pause:
+                            fixture.release.wait(4)
+                        self.wfile.write(b"\x03\x00\x04\x00")
+                        self.wfile.flush()
+                    except (BrokenPipeError, ConnectionResetError, TimeoutError):
+                        pass
+                    return
                 if self.path == "/v1/embeddings":
                     fixture.rag_started.set()
                     if fixture.rag_pause:
@@ -215,12 +243,15 @@ class GatewayTest(unittest.TestCase):
             "asr": {"address": f"127.0.0.1:{self.asr_port}",
                     "api_key_file": self.root / "asr_key",
                     "max_connections": 1, "read_timeout_seconds": 2},
+            "tts": {"address": f"127.0.0.1:{self.http_server.server_port}",
+                    "api_key_file": self.root / "tts_key", "max_body_bytes": 512,
+                    "max_connections": 1, "read_timeout_seconds": 2},
             "yolo": {"address": f"127.0.0.1:{grpc_port}",
                      "health_address": f"127.0.0.1:{self.http_server.server_port}",
                      "api_key_file": self.root / "yolo_key", "max_connections": 1, "read_timeout_seconds": 2},
         }
         for path in (self.cfg["api_key_file"],
-                     *(self.cfg[n]["api_key_file"] for n in ("vlm", "yolo", "rag", "asr"))):
+                     *(self.cfg[n]["api_key_file"] for n in ("vlm", "yolo", "rag", "asr", "tts"))):
             secret(path, create=True)
         self.key = secret(self.cfg["api_key_file"])
         config = self.root / "nginx.conf"
@@ -359,7 +390,8 @@ class GatewayTest(unittest.TestCase):
                     list(chunks)
 
     def test_route_allowlist_body_limit_and_upstream_errors(self):
-        for path in ("/metrics", "/v1/models", "/vlm/metrics", "/rag/v1/rerank", "/rag/metrics", "/rag/pooling"):
+        for path in ("/metrics", "/v1/models", "/vlm/metrics", "/rag/v1/rerank", "/rag/metrics",
+                     "/rag/pooling", "/tts/metrics", "/tts/docs", "/tts/v1/models"):
             self.assertEqual(self.http.get(path).status_code, 404)
         self.assertEqual(self.http.get("/vlm/v1/chat/completions").status_code, 403)
         self.assertEqual(self.http.post("/vlm/v1/chat/completions", content=b"x" * 1025).status_code, 413)
@@ -437,6 +469,33 @@ class GatewayTest(unittest.TestCase):
             with self.asr(token="wrong"):
                 pass
         self.assertEqual(caught.exception.response.status_code, 401)
+
+    def test_tts_streams_pcm_and_replaces_the_public_credential(self):
+        payload = {"model": "cosyvoice-300m-instruct", "input": "测试", "voice": "中文女",
+                   "instructions": "自然播报", "response_format": "pcm", "stream": True, "speed": 1.0}
+        self.tts_pause = True
+        with self.http.stream("POST", "/tts/v1/audio/speech", json=payload) as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers["X-Audio-Format"], "pcm_s16le")
+            chunks = response.iter_raw()
+            first = next(chunks)
+            self.assertEqual(first, b"\x01\x00\x02\x00")
+            self.assertTrue(self.tts_started.is_set())
+            self.assertEqual(self.http.post("/tts/v1/audio/speech", json=payload).status_code, 429)
+            self.assertEqual(self.http.get("/vlm/v1/models").status_code, 200)
+            self.release.set()
+            self.assertEqual(b"".join(chunks), b"\x03\x00\x04\x00")
+        path, headers, body = next(item for item in reversed(self.http_requests)
+                                   if item[0] == "/v1/audio/speech")
+        self.assertEqual((path, body), ("/v1/audio/speech", payload))
+        expected = "Bearer " + secret(self.cfg["tts"]["api_key_file"])
+        self.assertEqual(headers["Authorization"], expected)
+        self.assertNotEqual(expected, "Bearer " + self.key)
+        self.assertEqual(self.http.get("/tts/health/ready").json(), {"status": "ok"})
+        voices = self.http.get("/tts/v1/audio/voices").json()
+        self.assertEqual(voices["data"][0]["id"], "中文女")
+        self.assertEqual(self.http.get("/tts/v1/audio/speech").status_code, 403)
+        self.assertEqual(self.http.post("/tts/v1/audio/speech", content=b"x" * 513).status_code, 413)
 
     def test_failed_configuration_check_retains_last_valid_gateway_configuration(self):
         with patch.object(gateway_service, "RUNTIME", self.root):

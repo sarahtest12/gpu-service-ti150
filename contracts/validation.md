@@ -67,3 +67,22 @@ python3 -m venv /tmp/gpu-contract-review
 | 不提供文件转写 | `/asr/v1/audio/transcriptions` 返回 404 |
 
 ASR 真实行为与显存快照见 [`asr_service/docs/validation.md`](../asr_service/docs/validation.md)。
+
+## CosyVoice 流式 TTS 增量
+
+2026-09-11 新增 `/tts/health/ready`、`/tts/v1/audio/voices` 和
+`/tts/v1/audio/speech`，从预留接口改为已实现操作。当前契约版本为 `0.4.0-review`。
+
+| 校验 | 结果 |
+| --- | --- |
+| `openapi-spec-validator==0.7.2` 校验 OpenAPI 3.1.1 | 通过 |
+| NGINX 配置语法、精确路由和密钥替换 | 通过 |
+| 真实 NGINX + TLS + HTTP/SSE/WebSocket/gRPC 测试 | 14 项通过 |
+| TTS 字段、PCM 格式、鉴权、取消清理、并发和日志脱敏单元测试 | 6 项通过 |
+| 真实 CosyVoice 经统一入口生成 PCM/WAV | 通过 |
+| 音色列表、错误公开 key、分词器控制序列拒绝 | 通过 |
+
+TTS 返回固定 22050 Hz 单声道 PCM S16LE，使用 HTTP chunked 传输，不定义分块大小。
+真实样本、首段时间与显存快照见
+[`tts_service/docs/validation.md`](../tts_service/docs/validation.md)。监控仍未实现，TTS 的监控耗时
+口径也尚未与现有 YOLO/VLM/RAG 指标契约合并。

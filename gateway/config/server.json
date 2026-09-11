@@ -25,6 +25,13 @@
     "max_connections": 4,
     "read_timeout_seconds": 3600
   },
+  "tts": {
+    "address": "127.0.0.1:8004",
+    "api_key_file": "../../tts_service/runtime/api_key",
+    "max_body_bytes": 16384,
+    "max_connections": 1,
+    "read_timeout_seconds": 600
+  },
   "yolo": {
     "address": "127.0.0.1:50051",
     "health_address": "127.0.0.1:8081",

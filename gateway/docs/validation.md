@@ -24,6 +24,18 @@ WebSocket 用例后为 13 项，验证了 TLS 升级、公共 key 替换为 ASR 
 WebSocket Upgrade。完整文件转写路径经验证返回 404。详细结果见
 [`../../asr_service/docs/validation.md`](../../asr_service/docs/validation.md)。
 
+## CosyVoice 流式 TTS 增量验收
+
+2026-09-11 部署 CosyVoice-300M-Instruct 后，网关、YOLO、VLM、RAG、ASR、TTS 六个进程组
+均为 `managed: true`、`ready: true`。网关协议测试扩展为 14 项，验证 TTS 公共 key 被替换为
+独立内部 key、PCM 首段不会等待上游完成、并发 1 的额度不阻塞 VLM、16 KiB 请求体限制、
+健康和音色接口，以及 docs/metrics/模型列表等未开放路径保持 404。
+
+真实模型通过 `https://localhost:8443` 合成 2.299 秒 WAV，首段约 8.969 秒、总耗时约
+8.974 秒。模型与网关均未在响应中提供 `Content-Length`，CPU 客户端按返回头将分块 PCM
+封装为有效 WAV。详细运行时、显存和限制见
+[`../../tts_service/docs/validation.md`](../../tts_service/docs/validation.md)。
+
 ## 首次网关验收结果（历史）
 
 | 验证 | 结果 |
@@ -72,7 +84,7 @@ python -m unittest discover -s gateway/tests -p test_gateway.py -v
 ```bash
 python3 gateway/service.py start
 python3 gateway/service.py status
-# 等待五个服务均 ready: true 后：
+# 等待六个服务均 ready: true 后：
 source yolov5v70-service/scripts/corex_env.sh
 RUN_GATEWAY_INTEGRATION=1 python -m unittest discover -s gateway/tests -p test_live_gateway.py -v
 ```
@@ -125,5 +137,5 @@ YOLO 独立虚拟环境已建立，官方 v7.0 权重下载后通过仓库指定
 开发凭据、证书、模型、编译输出与私密运行日志均在 Git 忽略范围内。
 
 未安装或启用 systemd 单元；提供的是需要按实际部署路径、用户调整的模板。
-RAG rerank、TTS 与 YOLO HTTP 单图路由尚未实现，当前不会伪装成可用服务。
+RAG rerank 与 YOLO HTTP 单图路由尚未实现，当前不会伪装成可用服务。
 ASR 仅部署实时 WebSocket，不提供完整文件转写路由。

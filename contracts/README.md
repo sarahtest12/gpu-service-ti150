@@ -1,6 +1,7 @@
 # 算法服务契约 Review
 
-初始 VLM/YOLO 契约基线为 `88bb84a`（add gateway）。随后已部署 BGE-M3 和 Fun-ASR-Nano-2512。
+初始 VLM/YOLO 契约基线为 `88bb84a`（add gateway）。随后已部署 BGE-M3、Fun-ASR-Nano-2512
+和 CosyVoice-300M-Instruct。
 监控部分继续保留已确认的设计，尚未实现；重排序模型暂不部署。
 
 优先 review [`openapi.yaml`](openapi.yaml)。它是可导入 OpenAPI 工具的 **3.1.1** 单文件，
@@ -27,9 +28,11 @@ ASR 的握手和健康检查在 OpenAPI 中，双向消息语义见 [`asr-websoc
 | HTTP POST | `/rag/v1/rerank` | 检索重排 | 预留路径，当前 404 |
 | WebSocket | `/asr/v1/realtime` | Fun-ASR-Nano 实时语音识别 | 已实现；消息契约单列 |
 | HTTP GET | `/asr/health/ready` | ASR 引擎就绪 | 已实现 |
-| HTTP POST | `/tts/v1/audio/speech` | 语音合成 | 预留路径，当前 404 |
+| HTTP GET | `/tts/health/ready` | TTS 模型就绪 | 已实现 |
+| HTTP GET | `/tts/v1/audio/voices` | TTS 预置音色列表 | 已实现 |
+| HTTP POST | `/tts/v1/audio/speech` | CosyVoice 流式 PCM 合成 | 已实现 |
 
-RAG rerank、TTS 记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
+RAG rerank 记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
 YOLO 普通 HTTP 单图接口也尚未定义。监控的 RAG 耗时字段只是观测口径，不意味着已有 RAG 推理接口。
 
 统一目标为 `https://GPU_HOST:8443`，gRPC 客户端 target 为 `GPU_HOST:8443`。
@@ -116,6 +119,17 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 - 网关生成 `X-Request-ID`，并不保证它与 VLM 的 `chatcmpl-*` id 相同。
 - OpenAPI 文件当前没有发布为网关 `/openapi.json`、`/docs` 路由；本轮交付是 review 文件。
 
+## TTS 契约说明
+
+TTS 请求一次提交完整文本，响应以 HTTP chunked 传输连续的 PCM S16LE 字节流。音频固定为
+22050 Hz、单声道；HTTP 分块大小没有业务语义。只支持 `cosyvoice-300m-instruct`、7 个预置
+音色、`stream=true`、`speed=1.0` 和 `response_format=pcm`。不提供参考音频克隆或编码格式转换。
+
+服务与网关各限制 1 个活跃请求。客户端取消后，CosyVoice v1 会在服务端完成该生成器并清理缓存，
+期间新请求仍可能返回 429。HTTP 200 后的推理异常会表现为 PCM 提前断流；需要由 CPU 业务结合
+预期播放流程处理。部署与真实样本见 [`../tts_service/README.md`](../tts_service/README.md) 和
+[`../tts_service/docs/validation.md`](../tts_service/docs/validation.md)。
+
 ## 内部接口范围
 
 以下是项目使用和文档支持的本机诊断入口，不开放给 CPU 后端，不使用对外共享 key 直连。
@@ -134,6 +148,8 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 | `127.0.0.1:8002` | `/metrics` | vLLM 内部诊断指标；不转发到统一网关 |
 | `127.0.0.1:8003` | `/health` | ASR JSON 健康检查，使用 ASR 内部 key |
 | `127.0.0.1:8003` | `/realtime` | 实时 ASR WebSocket，使用 ASR 内部 key |
+| `127.0.0.1:8004` | `/health` | TTS JSON 健康检查，使用 TTS 内部 key |
+| `127.0.0.1:8004` | `/v1/audio/voices`、`/v1/audio/speech` | TTS 内部 HTTP，使用 TTS 内部 key |
 
 厂商 vLLM 包中其他管理、tokenize 或文档路由没有被网关转发，不属于本项目对 CPU 的支持契约。
 
@@ -143,7 +159,7 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 也可以直接看 YAML 的 `paths`，再按 `$ref` 找到对应输入输出结构。
 不要根据 `proposed` 操作生成“已上线”列表；预留接口的请求/响应需要另行设计。
 
-初始契约、RAG 与 ASR 增量校验结果记录在 [`validation.md`](validation.md)。
+初始契约、RAG、ASR 与 TTS 增量校验结果记录在 [`validation.md`](validation.md)。
 
 描述规范依据：[OpenAPI 3.1.1](https://spec.openapis.org/oas/v3.1.1.html)；
 gRPC 双向流语义依据：[gRPC 核心概念](https://grpc.io/docs/what-is-grpc/core-concepts/)。

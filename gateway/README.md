@@ -36,6 +36,7 @@ bootstrap 固定 NGINX 1.30.4 并校验源码 SHA-256，启用 SSL 与 HTTP/2，
 | `vlm_service/runtime/api_key` | 保留 VLM 自己的内部 key，网关注入上游请求 |
 | `rag_service/runtime/api_key` | RAG 内部 key，网关注入上游请求 |
 | `asr_service/runtime/api_key` | ASR 内部 key，网关在 WebSocket 握手时注入 |
+| `tts_service/runtime/api_key` | TTS 内部 key，网关注入上游请求 |
 | `gateway/runtime/tls/server.crt` | 可传给 CPU 客户端信任的开发证书 |
 | `gateway/runtime/tls/server.key` | 留在 GPU 主机的 TLS 私钥 |
 
@@ -59,6 +60,7 @@ bash yolov5v70-service/scripts/bootstrap_corex.sh
 bash vlm_service/scripts/bootstrap.sh
 bash rag_service/scripts/bootstrap.sh
 bash asr_service/scripts/bootstrap.sh
+bash tts_service/scripts/bootstrap.sh
 ```
 
 VLM 模型路径见 `vlm_service/config/server.json`。统一管理目前按本机分配固定 GPU 0 给 YOLO、GPU 1 给 VLM，
@@ -66,7 +68,8 @@ YOLO 使用上述验收权重。换业务模型需更新网关配置中 `yolo.we
 并通过 YOLO 环境变量配置匹配的类别文件等参数，重新做检测验收。
 RAG 的模型配置见 `rag_service/config/server.json`，BGE-M3 在 GPU 0 以 FP16 与 YOLO 共存。
 ASR 配置见 `asr_service/config/server.json`，Fun-ASR-Nano 在 GPU 0 使用 BF16 和 vLLM 解码。
-VLM/RAG/ASR 的监听配置须与网关各自的上游地址一致；算法内部端口仅监听 loopback。
+TTS 配置见 `tts_service/config/server.json`，CosyVoice-300M-Instruct 在 GPU 0 使用 FP16 TorchScript。
+VLM/RAG/ASR/TTS 的监听配置须与网关各自的上游地址一致；算法内部端口仅监听 loopback。
 删除网关配置中的 `rag` 段可不管理或转发 RAG；这不会主动停止已运行的 RAG，应先单独停止它。
 
 ## 启动、状态和停止
@@ -80,21 +83,23 @@ python3 gateway/service.py stop --service rag
 python3 gateway/service.py start --service rag
 python3 gateway/service.py stop --service asr
 python3 gateway/service.py start --service asr
+python3 gateway/service.py stop --service tts
+python3 gateway/service.py start --service tts
 python3 gateway/service.py reload --service gateway
 python3 gateway/service.py stop
 ```
 
-五个服务进程组各有独立日志和状态记录。启动时模型可能仍在加载；网关可以先服务其他已就绪算法。
+六个服务进程组各有独立日志和状态记录。启动时模型可能仍在加载；网关可以先服务其他已就绪算法。
 `reload` 只重载网关：先验证候选配置，通过后原子替换配置并发送 HUP。失败时保留原配置，
 不会重启算法进程。重载返回后仍需验证新路由；旧 worker 的最长退出等待为 10 秒。
 `managed` 表示本控制程序拥有该后台进程，`ready` 表示相应接口检查通过，两者分别报告。
-`/health/live` 只表示网关存活；算法就绪分别查询 `/vlm/health/ready`、`/yolo/health/ready`、`/rag/health/ready` 和 `/asr/health/ready`。
+`/health/live` 只表示网关存活；算法就绪分别查询各自的 `/vlm/health/ready`、`/yolo/health/ready`、`/rag/health/ready`、`/asr/health/ready` 和 `/tts/health/ready`。
 本地管理器用 PID 创建时间及项目归属校验进程，停止操作只作用于本次启动的进程组。
 使用该管理器启动后，也用它停止；不要混用算法目录的后台启动脚本或生产 systemd。
 
 开发后台模式没有自动恢复。需要开机自启和故障恢复的 systemd 主机，可以使用
 `deploy/gpu-algorithm@.service`，按实际安装路径和专用运行用户调整，保证其能读取模型和设备、拥有 runtime。
-分别启用 `gpu-algorithm@gateway`、`gpu-algorithm@yolo`、`gpu-algorithm@vlm`、`gpu-algorithm@rag` 和 `gpu-algorithm@asr` 实例。
+分别启用 `gpu-algorithm@gateway`、`gpu-algorithm@yolo`、`gpu-algorithm@vlm`、`gpu-algorithm@rag`、`gpu-algorithm@asr` 和 `gpu-algorithm@tts` 实例。
 模板的 `run --service ...` 在前台运行对应进程，由 systemd 独立重启；容器中使用现有容器平台监督这些前台命令。
 
 ## 路由行为
@@ -105,6 +110,8 @@ python3 gateway/service.py stop
 - RAG 只公开 dense embedding；`/rag/v1/rerank` 保持 404。RAG 拥有独立上游 key 和并发额度。
 - `/asr/v1/realtime` 使用 WebSocket Upgrade 转发到 ASR `/realtime`；`/asr/health/ready` 映射到 `/health`。
 - ASR 路由关闭代理缓冲，空闲读取超时 3600 秒，最多 4 个活跃长连接；不公开文件转写路径。
+- `/tts/v1/audio/speech` 映射到 TTS 同名路径，关闭响应缓冲并保留 PCM 分块；`/tts/v1/audio/voices` 列出预置音色。
+- TTS 请求体上限 16 KiB、最多 1 个活跃请求、上游空闲读取超时 600 秒；不公开 docs、metrics 或音色克隆路径。
 - `/detector.v1.Detector/Detect` 保留 gRPC 消息、状态尾部、帧级错误和双向流。
 - 其余算法路径返回 404，管理和 metrics 接口不被通配转发。
 - HTTP 入口无/错 key 返回 401；gRPC 客户端得到 `UNAUTHENTICATED`。
@@ -123,7 +130,7 @@ python3 gateway/service.py stop
 
 ## CPU 客户端
 
-四个算法的 `cpu_client/` 都有 `config.gateway.example.json`。将 `GPU_HOST` 替换成实际 GPU 地址，
+五个算法的 `cpu_client/` 都有 `config.gateway.example.json`。将 `GPU_HOST` 替换成实际 GPU 地址，
 将服务器证书放到配置文件旁，设置同一个 `GPU_API_KEY`。`ca_file` 相对配置文件解析，
 `GPU_CA_FILE` 可覆盖它，建议使用绝对路径。使用系统信任的证书时可删除 `ca_file` 配置。
 VLM 的旧 `VLM_API_KEY`、YOLO 的旧 `DETECTOR_AUTH_TOKEN` 仍作为未设置 `GPU_API_KEY` 时的兼容项。
@@ -132,6 +139,7 @@ VLM 示例：`python demo.py --config config.gateway.example.json --stream --pro
 YOLO 示例：`python demo.py --config config.gateway.example.json`，先修改其中的图片路径。
 RAG 示例：在 `rag_service/cpu_client/` 运行 `python demo.py --config config.gateway.example.json --text '示例文档片段'`。
 ASR 客户端用法见 `asr_service/cpu_client/README.md`；业务侧发送实时 PCM16 帧并并行读取识别事件。
+TTS 示例：在 `tts_service/cpu_client/` 运行 `python demo.py --config config.gateway.example.json --text '欢迎使用语音服务。'`。
 CPU Web 后端负责向浏览器流式转发；在 CPU 一侧还有 NGINX 时，其流式路由也要关闭响应缓冲。
 
 ## 验收

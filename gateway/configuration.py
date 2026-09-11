@@ -37,7 +37,7 @@ def load(path):
         raise ValueError("probe_host must be a DNS name, IPv4 address or bracketed IPv6 address")
     for field in ("api_key_file", "certificate", "certificate_key"):
         cfg[field] = (path.parent / cfg[field]).resolve()
-    names = ["vlm", "yolo"] + [name for name in ("rag", "asr") if name in cfg]
+    names = ["vlm", "yolo"] + [name for name in ("rag", "asr", "tts") if name in cfg]
     for name in names:
         route = cfg[name]
         address(route["address"])
@@ -47,6 +47,8 @@ def load(path):
     positive(cfg["vlm"], "max_body_bytes", 1024 * 1024 * 1024)
     if "rag" in cfg:
         positive(cfg["rag"], "max_body_bytes", 1024 * 1024 * 1024)
+    if "tts" in cfg:
+        positive(cfg["tts"], "max_body_bytes", 1024 * 1024 * 1024)
     address(cfg["yolo"]["health_address"])
     cfg["yolo"]["weights"] = (path.parent / cfg["yolo"]["weights"]).resolve()
     if not re.fullmatch(r"[0-9a-f]{64}", cfg["yolo"]["weights_sha256"]):
@@ -129,6 +131,42 @@ def render(cfg, runtime):
             proxy_pass http://{asr['address']}/health;
         }}
 """
+    tts_locations, tts_zone = "", ""
+    if "tts" in cfg:
+        tts = cfg["tts"]
+        tts_key = secret(tts["api_key_file"])
+        keys.append(tts_key)
+        tts_zone = "limit_conn_zone $server_name zone=tts_slots:32k;"
+        tts_locations = f"""
+        location = /tts/v1/audio/speech {{
+            limit_except POST {{ deny all; }}
+            limit_conn tts_slots {tts['max_connections']};
+            client_max_body_size {tts['max_body_bytes']};
+            proxy_set_header Authorization {quoted('Bearer ' + tts_key)};
+            proxy_set_header Connection "";
+            proxy_set_header X-Request-ID $request_id;
+            proxy_read_timeout {tts['read_timeout_seconds']}s;
+            proxy_send_timeout {tts['read_timeout_seconds']}s;
+            proxy_buffering off;
+            proxy_pass http://{tts['address']}/v1/audio/speech;
+        }}
+        location = /tts/v1/audio/voices {{
+            limit_except GET {{ deny all; }}
+            proxy_set_header Authorization {quoted('Bearer ' + tts_key)};
+            proxy_set_header Connection "";
+            proxy_set_header X-Request-ID $request_id;
+            proxy_read_timeout 3s;
+            proxy_pass http://{tts['address']}/v1/audio/voices;
+        }}
+        location = /tts/health/ready {{
+            limit_except GET {{ deny all; }}
+            proxy_set_header Authorization {quoted('Bearer ' + tts_key)};
+            proxy_set_header Connection "";
+            proxy_set_header X-Request-ID $request_id;
+            proxy_read_timeout 3s;
+            proxy_pass http://{tts['address']}/health;
+        }}
+"""
     if len(set(keys)) != len(keys):
         raise ValueError("public and internal credentials must be distinct")
     if not cfg["certificate"].is_file() or not cfg["certificate_key"].is_file():
@@ -160,6 +198,7 @@ http {{
     limit_conn_zone $server_name zone=yolo_slots:32k;
     {rag_zone}
     {asr_zone}
+    {tts_zone}
     limit_conn_status 429;
     server {{
         listen {host}:{cfg['listen_port']} ssl;
@@ -210,6 +249,7 @@ http {{
         }}
         {rag_locations}
         {asr_locations}
+        {tts_locations}
         location = /detector.v1.Detector/Detect {{
             limit_except POST {{ deny all; }}
             client_max_body_size 0;

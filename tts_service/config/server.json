@@ -1,0 +1,35 @@
+{
+  "model": "/share/fshare/common/models/CosyVoice/CosyVoice-300M-Instruct",
+  "model_name": "cosyvoice-300m-instruct",
+  "source": "/root/llm-infer/transformers/audio/CosyVoice-300M-Instruct/CosyVoice",
+  "source_checksums": {
+    "cosyvoice/cli/cosyvoice.py": "672377036a78dfce6e409fcfa77f24ca592122919cdb727d135716e0deaef81d",
+    "cosyvoice/cli/frontend.py": "8614eb4a1610142cc555e8842c4778484945c58e21e6c4438adf1ec63a2b8082",
+    "cosyvoice/cli/model.py": "c8c20afeed48d73ed861d36bc9f108d93977ac5ec420a148f8d8bac10360d634"
+  },
+  "model_checksums": {
+    "cosyvoice.yaml": "5475b9b2f788f3ddd3798898041197e076d20cb2ea783ef9638e6eed36ba16db",
+    "spk2info.pt": "e3b1d62ca87cdcb25a9003fa0c8f2cba5c94f55b0d5f80f0b63ef8c22d919cfc"
+  },
+  "device": 0,
+  "host": "127.0.0.1",
+  "port": 8004,
+  "sample_rate_hz": 22050,
+  "max_input_characters": 2000,
+  "max_instruction_characters": 500,
+  "max_concurrency": 1,
+  "load_jit": true,
+  "load_onnx": false,
+  "fp16": true,
+  "default_instruction": "用自然、清晰、中性的语气播报。",
+  "voices": {
+    "中文女": "Chinese",
+    "中文男": "Chinese",
+    "粤语女": "Cantonese",
+    "日语男": "Japanese",
+    "英文女": "English",
+    "英文男": "English",
+    "韩语女": "Korean"
+  }
+}
+
