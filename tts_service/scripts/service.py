@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate and run the CosyVoice-300M-Instruct service on the vendor CoreX stack."""
+"""Provision, validate, and run Fun-CosyVoice3 on the vendor CoreX stack."""
 
 import argparse
 import hashlib
@@ -20,12 +20,22 @@ ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / "config/server.json"
 KEY = ROOT / "runtime/api_key"
 PYTHON = ROOT / ".venv/bin/python"
+VENV_SITE = ROOT / ".venv/lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
 COREX = Path("/usr/local/corex")
+# This host exports CoreX through PYTHONPATH globally.  Put the service's pinned
+# frontend packages ahead of that vendor directory while continuing to import
+# torch and torchaudio from CoreX.
+if str(VENV_SITE) in sys.path:
+    sys.path.remove(str(VENV_SITE))
+sys.path.insert(0, str(VENV_SITE))
 EXPECTED = {
     "torch": "2.7.1+corex.4.4.0",
     "torchaudio": "2.7.1+corex.4.4.0",
     "onnxruntime": "1.17.3",
-    "HyperPyYAML": "1.2.2",
+    "HyperPyYAML": "1.2.3",
+    "transformers": "4.51.3",
+    "x-transformers": "2.11.24",
+    "diffusers": "0.29.0",
     "openai-whisper": "20231117",
     "inflect": "7.3.1",
     "WeTextProcessing": "1.0.3",
@@ -56,48 +66,111 @@ def positive(cfg, key, *, integer=False, maximum=None, allow_zero=False):
         raise ValueError(f"invalid {key}")
 
 
-def config():
+def revision(value, name):
+    if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
+        raise ValueError(f"invalid {name}")
+
+
+def read_voice_manifest(cfg, *, require_audio):
+    manifest_path = Path(cfg["voice_manifest"])
+    prompt_wav = Path(cfg["prompt_wav"])
+    if not manifest_path.is_absolute() or not manifest_path.is_file():
+        raise ValueError("voice_manifest must be an existing absolute file")
+    if not prompt_wav.is_absolute():
+        raise ValueError("prompt_wav must be an absolute path")
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get("voice_id") != cfg["voice_id"] or cfg["voice_id"] != "aishell3-female":
+        raise ValueError("fixed voice ID mismatch")
+    prompt_text = manifest.get("prompt_text")
+    if not isinstance(prompt_text, str) or not prompt_text.strip() or "\x00" in prompt_text:
+        raise ValueError("invalid fixed voice prompt text")
+    dataset = manifest.get("dataset", {})
+    speaker = dataset.get("speaker", {})
+    if (dataset.get("repository") != "AISHELL/AISHELL-3"
+            or dataset.get("license") != "Apache-2.0"
+            or speaker.get("gender") != "female"):
+        raise ValueError("unexpected AISHELL-3 voice provenance")
+    revision(dataset.get("revision"), "AISHELL-3 revision")
+    utterances = dataset.get("utterances")
+    if not isinstance(utterances, list) or not utterances:
+        raise ValueError("voice manifest has no utterances")
+    for item in utterances:
+        if (not isinstance(item.get("path"), str)
+                or not re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", ""))
+                or type(item.get("trim_start_sample")) is not int
+                or type(item.get("trim_end_sample")) is not int
+                or item["trim_start_sample"] < 0
+                or item["trim_end_sample"] <= item["trim_start_sample"]):
+            raise ValueError("invalid voice utterance manifest")
+    derived = manifest.get("derived", {})
+    if (derived.get("sample_rate_hz") != cfg["sample_rate_hz"]
+            or derived.get("channels") != 1
+            or type(derived.get("samples")) is not int
+            or derived["samples"] < 1
+            or not re.fullmatch(r"[0-9a-f]{64}", derived.get("sha256", ""))):
+        raise ValueError("invalid derived voice manifest")
+    if require_audio:
+        if not prompt_wav.is_file() or sha256(prompt_wav) != derived["sha256"]:
+            raise ValueError("fixed voice audio mismatch")
+    return manifest
+
+
+def config(*, require_artifacts=True):
     cfg = json.loads(CONFIG.read_text())
     if not ipaddress.ip_address(cfg["host"]).is_loopback:
         raise ValueError("TTS must listen on loopback; expose it only through the gateway")
     positive(cfg, "port", integer=True, maximum=65535)
     positive(cfg, "device", integer=True, maximum=64, allow_zero=True)
     positive(cfg, "sample_rate_hz", integer=True, maximum=192000)
-    positive(cfg, "max_input_characters", integer=True, maximum=10000)
-    positive(cfg, "max_instruction_characters", integer=True, maximum=2000)
+    positive(cfg, "max_input_chunk_characters", integer=True, maximum=4096)
+    positive(cfg, "max_utterance_characters", integer=True, maximum=10000)
+    positive(cfg, "max_message_bytes", integer=True, maximum=1024 * 1024)
+    positive(cfg, "input_timeout_seconds", integer=True, maximum=3600)
+    positive(cfg, "session_idle_timeout_seconds", integer=True, maximum=86400)
+    positive(cfg, "text_queue_chunks", integer=True, maximum=1024)
+    positive(cfg, "text_queue_timeout_seconds", integer=True, maximum=300)
     positive(cfg, "max_concurrency", integer=True, maximum=4)
-    if cfg["device"] != 0 or cfg["sample_rate_hz"] != 22050 or cfg["max_concurrency"] != 1:
-        raise ValueError("this deployment is validated for GPU 0, 22050 Hz and one active request")
-    if cfg["model_name"] != "cosyvoice-300m-instruct":
-        raise ValueError("unexpected public model name")
-    if (cfg["load_jit"], cfg["load_onnx"], cfg["fp16"]) != (True, False, True):
-        raise ValueError("this deployment uses FP16 TorchScript and the PyTorch flow decoder")
-    if not isinstance(cfg["default_instruction"], str) or not cfg["default_instruction"].strip():
-        raise ValueError("default_instruction must be non-empty")
-    expected_voices = {"中文女", "中文男", "粤语女", "日语男", "英文女", "英文男", "韩语女"}
-    if set(cfg["voices"]) != expected_voices or not all(isinstance(v, str) for v in cfg["voices"].values()):
-        raise ValueError("configured voice allowlist does not match CosyVoice-300M-Instruct")
+    revision(cfg["model_revision"], "model_revision")
+    revision(cfg["source_revision"], "source_revision")
+    if (cfg["model_name"] != "fun-cosyvoice3-0.5b-2512"
+            or cfg["device"] != 0
+            or cfg["sample_rate_hz"] != 24000
+            or cfg["max_concurrency"] != 1):
+        raise ValueError("unexpected CosyVoice3 deployment boundary")
+    if cfg["max_input_chunk_characters"] > cfg["max_utterance_characters"]:
+        raise ValueError("input chunk limit exceeds utterance limit")
+    if (cfg["load_vllm"], cfg["load_trt"], cfg["fp16"]) != (False, False, True):
+        raise ValueError("this deployment uses native PyTorch FP16 bi-streaming")
 
     model, source = Path(cfg["model"]), Path(cfg["source"])
-    if not model.is_absolute() or not model.is_dir():
+    if not model.is_absolute() or not source.is_absolute():
+        raise ValueError("model and source paths must be absolute")
+    cfg["prompt_text"] = read_voice_manifest(cfg, require_audio=require_artifacts)["prompt_text"]
+    if not require_artifacts:
+        return cfg
+    if not model.is_dir():
         raise ValueError("model must be an existing absolute directory")
-    if not source.is_absolute() or not (source / "cosyvoice").is_dir():
-        raise ValueError("vendor CosyVoice source is missing")
-    required_model = ("llm.pt", "flow.pt", "hift.pt", "llm.text_encoder.fp16.zip",
-                      "llm.llm.fp16.zip", "flow.encoder.fp32.zip", "cosyvoice.yaml", "spk2info.pt")
+    if not (source / "cosyvoice").is_dir():
+        raise ValueError("pinned CosyVoice source is missing")
+    required_model = (
+        "cosyvoice3.yaml", "llm.pt", "flow.pt", "hift.pt", "campplus.onnx",
+        "speech_tokenizer_v3.onnx", "CosyVoice-BlankEN/config.json",
+        "CosyVoice-BlankEN/model.safetensors", "CosyVoice-BlankEN/merges.txt",
+        "CosyVoice-BlankEN/tokenizer_config.json", "CosyVoice-BlankEN/vocab.json",
+    )
     missing = [name for name in required_model if not (model / name).is_file()]
     if missing:
-        raise ValueError("CosyVoice checkpoint is incomplete: " + ", ".join(missing))
+        raise ValueError("CosyVoice3 checkpoint is incomplete: " + ", ".join(missing))
     if not (source / "third_party/Matcha-TTS/matcha").is_dir():
         raise ValueError("CosyVoice Matcha-TTS submodule is missing")
     for name, expected in cfg["source_checksums"].items():
         path = source / name
         if not path.is_file() or sha256(path) != expected:
-            raise ValueError(f"vendor CosyVoice source mismatch: {name}")
+            raise ValueError(f"pinned CosyVoice source mismatch: {name}")
     for name, expected in cfg["model_checksums"].items():
         path = model / name
         if not path.is_file() or sha256(path) != expected:
-            raise ValueError(f"CosyVoice checkpoint metadata mismatch: {name}")
+            raise ValueError(f"CosyVoice3 checkpoint mismatch: {name}")
     return cfg
 
 
@@ -107,13 +180,15 @@ def environment(cfg):
     env.pop("PYTHONHOME", None)
     env.update({
         "PYTHONPATH": ":".join((str(source), str(source / "third_party/Matcha-TTS"),
-                                str(COREX / "lib64/python3/dist-packages"))),
+                                str(VENV_SITE), str(COREX / "lib64/python3/dist-packages"))),
         "PATH": f"{ROOT}/.venv/bin:{COREX}/bin:/usr/local/bin:/usr/bin:/bin",
         "LD_LIBRARY_PATH": f"{COREX}/lib64:/usr/local/lib:/usr/local/openmpi/lib",
         "VIRTUAL_ENV": str(ROOT / ".venv"),
         "CUDA_VISIBLE_DEVICES": str(cfg["device"]),
-        "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
-        "TOKENIZERS_PARALLELISM": "false", "OMP_NUM_THREADS": "4",
+        "HF_HUB_OFFLINE": "1",
+        "TRANSFORMERS_OFFLINE": "1",
+        "TOKENIZERS_PARALLELISM": "false",
+        "OMP_NUM_THREADS": "4",
     })
     return env
 
@@ -131,6 +206,47 @@ def init_key():
         raise ValueError("invalid TTS internal credential")
 
 
+def prepare_voice(cfg):
+    from huggingface_hub import hf_hub_download
+    import torch
+    import torchaudio
+
+    manifest = read_voice_manifest(cfg, require_audio=False)
+    dataset = manifest["dataset"]
+    segments = []
+    for item in dataset["utterances"]:
+        source = Path(hf_hub_download(
+            repo_id=dataset["repository"],
+            repo_type="dataset",
+            revision=dataset["revision"],
+            filename=item["path"],
+        ))
+        if sha256(source) != item["sha256"]:
+            raise ValueError(f"AISHELL-3 source mismatch: {item['path']}")
+        audio, sample_rate = torchaudio.load(source)
+        if (audio.shape[0] != 1 or sample_rate != item["sample_rate_hz"]
+                or audio.shape[1] != item["samples"]):
+            raise ValueError(f"AISHELL-3 audio metadata mismatch: {item['path']}")
+        segments.append(audio[:, item["trim_start_sample"]:item["trim_end_sample"]])
+    audio = torch.cat(segments, dim=1)
+    audio = torchaudio.functional.resample(
+        audio, dataset["utterances"][0]["sample_rate_hz"],
+        manifest["derived"]["sample_rate_hz"],
+    )
+    if audio.shape != (1, manifest["derived"]["samples"]):
+        raise ValueError("derived fixed voice sample count mismatch")
+    target = Path(cfg["prompt_wav"])
+    target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = target.with_name(target.name + ".tmp.wav")
+    torchaudio.save(str(temporary), audio, manifest["derived"]["sample_rate_hz"],
+                    encoding="PCM_S", bits_per_sample=16)
+    if sha256(temporary) != manifest["derived"]["sha256"]:
+        temporary.unlink(missing_ok=True)
+        raise ValueError("derived fixed voice checksum mismatch")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, target)
+
+
 def check(cfg):
     if Path(sys.executable).resolve() != PYTHON.resolve():
         raise ValueError(f"run this command with {PYTHON}")
@@ -141,23 +257,30 @@ def check(cfg):
     probe = """
 import onnxruntime
 import torch
-from cosyvoice.cli.cosyvoice import CosyVoice
+from cosyvoice.cli.cosyvoice import AutoModel
 assert '/usr/local/corex' in torch.__file__
-assert 'CPUExecutionProvider' in onnxruntime.get_available_providers()
-print('CosyVoice imports and CoreX runtime: PASS')
+providers = onnxruntime.get_available_providers()
+assert 'CPUExecutionProvider' in providers
+assert 'CUDAExecutionProvider' not in providers
+print('CosyVoice3 imports and CoreX runtime: PASS')
 """
     subprocess.run([str(PYTHON), "-c", probe], cwd=ROOT, env=environment(cfg), check=True)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check", "init-key", "run"))
+    parser.add_argument("action", choices=("check", "init-key", "prepare-voice", "run"))
     args = parser.parse_args()
     os.umask(0o077)
+    if args.action == "prepare-voice":
+        cfg = config(require_artifacts=False)
+        prepare_voice(cfg)
+        print(f"Pinned AISHELL-3 voice ready: {cfg['prompt_wav']}")
+        return
     cfg = config()
     if args.action == "check":
         check(cfg)
-        print("TTS environment and pinned model: PASS")
+        print("TTS environment, pinned model, source and voice: PASS")
         return
     if args.action == "init-key":
         init_key()
@@ -176,6 +299,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
+    except (OSError, ValueError, RuntimeError, KeyError, subprocess.CalledProcessError) as error:
         print(str(error), file=sys.stderr)
         raise SystemExit(1)
