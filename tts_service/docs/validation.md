@@ -120,8 +120,8 @@ HEAD、完整允许差异及 Matcha-TTS 子模块 revision。固定音色清单�
 
 最终 TTS 测试 50 项通过；网关测试 15 项通过（4 项需显式开启的真机集成测试跳过），监控测试
 6 项通过，OpenAPI 3.1.1 校验通过。NGINX 配置、`service.py check`、干净官方 revision 上的
-`git apply --check` 和 `git diff --check` 均通过。最终复审补充修复后的进程 PID 2164597 已就绪，
-TTS 显存 4215.276 MB；YOLO、VLM、RAG、ASR、TTS、监控和网关均为 `managed: true`、
+`git apply --check` 和 `git diff --check` 均通过。最终 HEAD 对应进程 PID 2189302 已就绪，
+TTS 显存 4034.920 MB；YOLO、VLM、RAG、ASR、TTS、监控和网关均为 `managed: true`、
 `ready: true`。完整基础包文件校验约耗时 47 秒，只在服务启动门禁执行。
 
 重启后的第一次公共 WSS 请求包含模型热身：输入在 8.005937 秒结束，首 PCM 在 10.792735 秒
@@ -136,3 +136,6 @@ SHA-256 为 `20ea74f58ef0ef7ff9ff5928b97451915dbcdfbc662aa6518eee18935be6f7d9`�
 33.320473 秒，SHA-256 为
 `138119d058928cc27b36bca6145bd78dc9f3f2c7f499b74e8555939d3f21c25f`。近 60 秒 TTS TTFT
 平均 888.947 ms、P95 1248 ms，验证文本仍未写入 TTS 或网关日志。
+
+最终 HEAD 重启后的公共入口连通性复验首 PCM 为 4.346897 秒，输出 328320 字节 PCM，总耗时
+7.524652 秒；服务完成后仍为 `ready: true`。
