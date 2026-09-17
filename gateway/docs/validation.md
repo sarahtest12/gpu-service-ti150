@@ -155,5 +155,23 @@ ASR 仅部署实时 WebSocket，不提供完整文件转写路由。
 2026-09-17 网关将 TTS 公共入口替换为 `WSS /tts/v1/realtime`。真实 NGINX/TLS 测试桩验证了
 WebSocket Upgrade、统一公开 key 替换为 TTS 内部 key、二进制 PCM 不缓冲、单连接 429 限制、
 TTS 长连接不阻塞 VLM，以及已移除的 TTS 公共路径返回 404。网关全量协议测试 15 项通过，
-4 项需要运行中模型的验收按环境开关跳过。真实模型和切换结果见
+常规测试中 4 项需要运行中模型的验收按环境开关跳过；切换完成后设置
+`RUN_GATEWAY_INTEGRATION=1` 单独执行，YOLO、VLM、ASR 和统一健康/鉴权 4 项全部通过。
+
+内部 TTS 报告就绪后才重载 NGINX；重载后网关和五个算法及监控进程均为
+`managed: true`、`ready: true`。CPU 客户端通过 `wss://localhost:8443/tts/v1/realtime` 建立一个
+连接，事件序列为 `session.created`，每条 utterance 的 `audio.start`、二进制 PCM、
+`audio.done`，最后 `session.close`。三条语音的结果如下：
+
+| utterance | 首个 PCM | 总耗时 | 音频时长 | PCM SHA-256 |
+| --- | ---: | ---: | ---: | --- |
+| 1（文本三段追加） | 1.829533 s | 19.530475 s | 18.120000 s | `bcb78c973e7c1133e2634724e2a8c9f1c0f780416c10200c6027c022816b1330` |
+| 2（复用连接） | 1.518033 s | 10.818417 s | 11.280000 s | `1b429c3f5fd2f6e1a84f56e5cf12cbd54a44f6d622f604b1668523ce72d71802` |
+| 3（复用连接） | 1.531372 s | 12.901734 s | 12.520000 s | `ead95293172bcccd9f67b71eec585cb249cb15e60940851bcdc45dcae1e905b6` |
+
+第一条在发送三段文本后保持 generator 打开，收到首个二进制 PCM 后才允许发送 `input.done`，
+因此双向流式通过公共 NGINX/TLS 路径得到验证。`/tts/v1/audio/speech`、
+`/tts/v1/audio/voices`、`/tts/health/ready` 使用正确公开 key 均返回 404。强制监控快照返回 TTS
+`running`、显存 4034.920 MB、近 60 秒 TTFT 平均 124.039 ms、P95 296 ms。真实模型和
+CoreX 兼容补丁见
 [`../../tts_service/docs/validation.md`](../../tts_service/docs/validation.md)。

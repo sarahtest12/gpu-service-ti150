@@ -127,8 +127,14 @@ TTS 公共 HTTP 操作从 OpenAPI 和网关中删除；内部 `/health` 与 `/me
 | --- | --- |
 | OpenAPI 只暴露一个 TTS WebSocket 握手路径 | 通过 |
 | 固定模型、音色、24 kHz PCM 和 utterance 级 TTFT 跨文档一致 | 通过 |
-| TTS 引擎、WebSocket 服务、配置和 CPU 客户端 | 24 项通过 |
+| TTS 引擎、WebSocket 服务、配置和 CPU 客户端 | 29 项通过 |
 | 真实 NGINX/TLS WebSocket、公开 key 替换与单连接限制 | 通过 |
 | 已移除 TTS 公共路径 | 使用正确公开 key 均返回 404 |
+
+部署后的真实客户端在一个 TLS WebSocket 上顺序完成三条 utterance，均收到匹配的
+`audio.start`、二进制 PCM 和 `audio.done`。第一条分三次追加文本，首个 PCM 在 1.829533 秒
+返回后客户端才结束文本输入，证明公开入口支持双向流式；第二、三条复用同一连接，首个 PCM
+分别为 1.518033 秒和 1.531372 秒。最新强制监控快照中 TTS 为 `running`，显存
+4034.920 MB，近 60 秒首语音 token 平均 124.039 ms、P95 296 ms。
 
 前面的 CosyVoice v1 HTTP 章节保留为 2026-09-11 的历史验收记录，不再描述当前公共接口。

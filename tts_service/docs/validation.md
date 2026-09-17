@@ -69,5 +69,30 @@ PYTHONPATH="$TTS_VENV_SITE:/usr/local/corex/lib64/python3/dist-packages" \
   tts_service/.venv/bin/python -m unittest discover -s tts_service/tests -p 'test_*.py' -v
 ```
 
-公开 WSS 长连接复用、旧 HTTP 路由移除、监控快照和运行中服务显存将在网关切换后记录到本文件及
-`contracts/validation.md`、`gateway/docs/validation.md`。
+## 运行服务与公共入口
+
+旧 TTS 进程停止后，新服务在 `127.0.0.1:8004` 加载并通过内部鉴权 `/health`；进程显存为
+3848 MiB。NGINX 只在内部健康通过后重载，随后公共入口与所有其他算法、监控进程都保持
+`managed: true`、`ready: true`。
+
+真实 CPU 客户端通过一个 `wss://localhost:8443/tts/v1/realtime` 连接顺序完成三条 utterance。
+第一条发送三个 100 ms 间隔的文本块后保持输入打开，1.829533 秒收到首个 PCM，此后才发送
+`input.done`；所以双向流式通过了 TTS、NGINX、TLS 和客户端整条链路。第二、三条继续复用同一
+连接，首个 PCM 分别为 1.518033 秒、1.531372 秒。三条输出如下：
+
+| utterance | PCM 字节 | 音频时长 | 总耗时 | SHA-256 |
+| --- | ---: | ---: | ---: | --- |
+| 1 | 869760 | 18.120000 s | 19.530475 s | `bcb78c973e7c1133e2634724e2a8c9f1c0f780416c10200c6027c022816b1330` |
+| 2 | 541440 | 11.280000 s | 10.818417 s | `1b429c3f5fd2f6e1a84f56e5cf12cbd54a44f6d622f604b1668523ce72d71802` |
+| 3 | 600960 | 12.520000 s | 12.901734 s | `ead95293172bcccd9f67b71eec585cb249cb15e60940851bcdc45dcae1e905b6` |
+
+已删除的 `/tts/v1/audio/speech`、`/tts/v1/audio/voices`、`/tts/health/ready` 经统一公开 key
+访问均为 404。`/monitor/v1/overview?refresh=true` 的最新快照中 TTS 为 `running`，显存
+4034.920 MB（3848 MiB 换算为十进制 MB），近 60 秒 `time_to_first_token` 平均
+124.039 ms、P95 296 ms。该指标止于首个语音 token，不包括 flow、声码器和网络首 PCM 时间。
+
+切换前后验证结果为：TTS 29 项通过；网关协议 15 项通过；监控 6 项通过；另行启用运行中模型
+开关后，YOLO、VLM、ASR 和统一健康/鉴权 4 项真实网关集成测试全部通过。NGINX 配置检查、
+`service.py check` 与 `git diff --check` 均通过。最终公共长连接复验仍在一个连接内完成三条
+utterance，首个 PCM 分别为 1.724061 秒、1.539448 秒和 1.529806 秒，第一条依旧先收到 PCM
+再发送 `input.done`。
