@@ -47,6 +47,8 @@ pytorch-lightning==2.6.5 \
     --hash=sha256:62d9c8549b2278fedc3364f0a5607a56c6063d18635008f8cf3fae8d802b0d76
 pyworld==0.3.4 \
     --hash=sha256:106c70ee7a7d8c9ba488d8022f2033706929a40f0264256b8e87da5aab98303a
+pynini==2.1.5 \
+    --hash=sha256:29ea2c3b8218a87934d8707eceac573d88dc5e8797380711dcb314af203a3eb0
 ruamel.yaml==0.17.40 \
     --hash=sha256:b16b6c3816dff0a93dca12acf5e70afd089fa5acb80604afd1ffa8b465b7722c
 ruamel.yaml.clib==0.2.15 \
@@ -61,6 +63,8 @@ typeguard==4.6.0 \
     --hash=sha256:79878165bb86f2cf5d41d159a0ff1792a796cf496882d2fe1b1c6c7049b9cdd7
 websockets==15.0.1 \
     --hash=sha256:ac1e5c9054fe23226fb11e05a6e630837f074174c4c2f0fe442996112a6de4fb
+WeTextProcessing==1.0.3 \
+    --hash=sha256:e84e8a28827cec06750e9d5f4229d80e438f4a7d7feb783e33abe0bbdb83385d
 wget==3.2 \
     --hash=sha256:35e630eca2aa50ce998b9b1a127bb26b30dfee573702782aa982f875e3f16061
 x-transformers==2.11.24 \

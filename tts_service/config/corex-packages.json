@@ -1,0 +1,305 @@
+{
+  "packages": {
+    "annotated-doc": {
+      "name": "annotated-doc",
+      "record_sha256": "3cabaeb9b999ed65faddf624678c7e9d6886c82d7bfae5434b494867ef305cd1",
+      "root": "corex",
+      "version": "0.0.4"
+    },
+    "annotated-types": {
+      "name": "annotated-types",
+      "record_sha256": "6eb134c3d1487cbba6d4b7d279a6d55e455a6ee86649933024d5dec50bc345ee",
+      "root": "corex",
+      "version": "0.7.0"
+    },
+    "antlr4-python3-runtime": {
+      "name": "antlr4-python3-runtime",
+      "record_sha256": "454f9ca70a8a0e45ed7669f991c0c22158722d0650875de210bc9e0382315050",
+      "root": "system",
+      "version": "4.9.3"
+    },
+    "anyio": {
+      "name": "anyio",
+      "record_sha256": "2d4f6161e829ac9460e9a93c90a65512e732cbebfc48e2fb28f98b22cf0e0bd0",
+      "root": "corex",
+      "version": "4.12.1"
+    },
+    "beautifulsoup4": {
+      "name": "beautifulsoup4",
+      "record_sha256": "c466b1086431435d6e3ba927ff354e403341144afceb23f74f909b8f5cb387e2",
+      "root": "system",
+      "version": "4.14.3"
+    },
+    "certifi": {
+      "name": "certifi",
+      "record_sha256": "49c33412ab82d26c2f1f888c2aee06f350307af8877080efa68acb321c015942",
+      "root": "corex",
+      "version": "2026.1.4"
+    },
+    "cffi": {
+      "name": "cffi",
+      "record_sha256": "7f3c932c2c9dcd1559975e932ffbd47fb5a70bee5444acdcf31a48c57dc217bf",
+      "root": "corex",
+      "version": "2.0.0"
+    },
+    "charset-normalizer": {
+      "name": "charset-normalizer",
+      "record_sha256": "4b8d2c73b083eaca5e6f733824e4c1ad7eb043959ed87b7ed5c0c313898b3c16",
+      "root": "corex",
+      "version": "3.4.4"
+    },
+    "click": {
+      "name": "click",
+      "record_sha256": "8c3714cf5c63ba023beb61624690007811aa53a11beebde80f5581e682199257",
+      "root": "corex",
+      "version": "8.3.1"
+    },
+    "exceptiongroup": {
+      "name": "exceptiongroup",
+      "record_sha256": "669a02cf632e1e4e1896c7b3680be256683aea53e11a0ed823c90501030dd746",
+      "root": "corex",
+      "version": "1.3.1"
+    },
+    "fastapi": {
+      "name": "fastapi",
+      "record_sha256": "58462466dbfcfec4a6a741d8ca6837d99816ec689711d9d244ec80e5c68fcfeb",
+      "root": "corex",
+      "version": "0.129.0"
+    },
+    "filelock": {
+      "name": "filelock",
+      "record_sha256": "e0db66de2a6e0f867fb1e102580c8917bcc934cb2ad076ad15b6486561d41410",
+      "root": "corex",
+      "version": "3.23.0"
+    },
+    "h11": {
+      "name": "h11",
+      "record_sha256": "fb9ce0853bf149aa7cbe868c1c128e8408ae933145e032b102d384759fd7a4ed",
+      "root": "corex",
+      "version": "0.16.0"
+    },
+    "hf-xet": {
+      "name": "hf-xet",
+      "record_sha256": "70cf1d4d42e2f7f0f798e50f002ab8d8c2fd5cad3b8ebf5e84a4f98172dd96df",
+      "root": "corex",
+      "version": "1.2.0"
+    },
+    "idna": {
+      "name": "idna",
+      "record_sha256": "0a2f78db358d0bb3c806284ce7658f09fd59b8e470b88f291334b57f6d182862",
+      "root": "corex",
+      "version": "3.11"
+    },
+    "importlib-metadata": {
+      "name": "importlib_metadata",
+      "record_sha256": "822f33d0512e076252717260e2f4f06c46a0ad0f952cb52f68a91d72340f1a49",
+      "root": "system",
+      "version": "8.9.0"
+    },
+    "jinja2": {
+      "name": "Jinja2",
+      "record_sha256": "9b5a86efc4f4a4d9fce05c6586c1d7d36358add798cfd99135247a2e4908ab09",
+      "root": "corex",
+      "version": "3.1.6"
+    },
+    "llvmlite": {
+      "name": "llvmlite",
+      "record_sha256": "fe07eef73d66641ec422fc792a2197b38e93f03f9bc67280a29e9d22da7773c7",
+      "root": "corex",
+      "version": "0.44.0"
+    },
+    "loguru": {
+      "name": "loguru",
+      "record_sha256": "803770e446d33fe427cd4eed81f3f8e05f05ed5be2240ca238cc977eb2f5bdbf",
+      "root": "corex",
+      "version": "0.7.3"
+    },
+    "markupsafe": {
+      "name": "MarkupSafe",
+      "record_sha256": "e4b9ef2a396d23539ec5695a589216366d63053a5f3971325a8fa6881f49c91f",
+      "root": "corex",
+      "version": "3.0.3"
+    },
+    "more-itertools": {
+      "name": "more-itertools",
+      "record_sha256": "02441bf5a6c05925e86b9ad4342a7a4c07e82136be6c44d587903b10cd53cc41",
+      "root": "system",
+      "version": "11.1.0"
+    },
+    "mpmath": {
+      "name": "mpmath",
+      "record_sha256": "205c72eaa5058bc221713222d6533b28218df8104321e6fb945137b639a06527",
+      "root": "corex",
+      "version": "1.3.0"
+    },
+    "networkx": {
+      "name": "networkx",
+      "record_sha256": "441c9c9d2aeac36e6e07f100f389b7b266d885482602bdda189ea2463353299f",
+      "root": "corex",
+      "version": "3.4.2"
+    },
+    "numba": {
+      "name": "numba",
+      "record_sha256": "5b341f9946754b126231c24cf9853122112a2caed97eb55f8baa744a1d545367",
+      "root": "corex",
+      "version": "0.61.2"
+    },
+    "numpy": {
+      "name": "numpy",
+      "record_sha256": "4d76c519af1355fc51b0e50b5ee28123945752edb2e17f5167852c43fa0803ea",
+      "root": "corex",
+      "version": "1.26.4"
+    },
+    "pillow": {
+      "name": "pillow",
+      "record_sha256": "1b868af97c682e9b099b031c362aa2052337f3542e1486a1f18e98b180e3097a",
+      "root": "corex",
+      "version": "12.1.1"
+    },
+    "prometheus-client": {
+      "name": "prometheus_client",
+      "record_sha256": "a6a81a057589029da655de97d56fd1e76c226a8f8c3266060cfda13be1c7d662",
+      "root": "corex",
+      "version": "0.24.1"
+    },
+    "protobuf": {
+      "name": "protobuf",
+      "record_sha256": "cb998781253fda25fd95558ea6a87879ca4897cbdcf79da2709264c8da4ce3ea",
+      "root": "system",
+      "version": "7.35.1"
+    },
+    "pycparser": {
+      "name": "pycparser",
+      "record_sha256": "dc3f1caa39925d83b379720eff04f4c41257bc162d112924f4edce666984b891",
+      "root": "corex",
+      "version": "3.0"
+    },
+    "pydantic": {
+      "name": "pydantic",
+      "record_sha256": "0340a01e7a2565cc1511a6e3b42ff176e5fb4c0543a40f0f5bb1cbfbc69db817",
+      "root": "corex",
+      "version": "2.12.5"
+    },
+    "pydantic-core": {
+      "name": "pydantic_core",
+      "record_sha256": "24e7a214b645718c2255f88296ab68b372ed049ba771ccb9715e55c4f58a86e0",
+      "root": "corex",
+      "version": "2.41.5"
+    },
+    "pyyaml": {
+      "name": "PyYAML",
+      "record_sha256": "cb890276e02f3e482232f5c91a958e43830ffe7d7f9c26109ce7d6249607c735",
+      "root": "corex",
+      "version": "6.0.3"
+    },
+    "regex": {
+      "name": "regex",
+      "record_sha256": "ccae03d85ec2443e2722651d3615ba1d66df9fb1f6526dc047cbe87fead66f28",
+      "root": "corex",
+      "version": "2026.1.15"
+    },
+    "requests": {
+      "name": "requests",
+      "record_sha256": "928c0d3d67585036bb3559cc9253a0ed1b6e234cfd249401d5add904e616f1f9",
+      "root": "corex",
+      "version": "2.32.5"
+    },
+    "safetensors": {
+      "name": "safetensors",
+      "record_sha256": "590f788aff33f2bb24c91f4e5418ab1f32bd3ab69cfad7c6e2510cae2f200508",
+      "root": "corex",
+      "version": "0.7.0"
+    },
+    "scipy": {
+      "name": "scipy",
+      "record_sha256": "e5372c6fe03595e9d3dd6960d3fa23f0db13dfd6c26713f99e1c03ccb7fa1e68",
+      "root": "corex",
+      "version": "1.15.3"
+    },
+    "soundfile": {
+      "name": "soundfile",
+      "record_sha256": "b5cc5a90346573240841557417ceca40f50ecf6ad59a9409313bbc1be9ab0058",
+      "root": "corex",
+      "version": "0.13.1"
+    },
+    "soupsieve": {
+      "name": "soupsieve",
+      "record_sha256": "6c8eab9021db061e35307b1e4bbed0ffd71f1d2fe7c098ba9f8cb63a3079e536",
+      "root": "system",
+      "version": "2.8.3"
+    },
+    "starlette": {
+      "name": "starlette",
+      "record_sha256": "c442618ad8f1b619247d6843504f6a46184b0333c8770e82ad08b1e1ed98b81f",
+      "root": "corex",
+      "version": "0.52.1"
+    },
+    "sympy": {
+      "name": "sympy",
+      "record_sha256": "e0fd21a91b7a5b74a3d130880fac7a0c2c55de15cce214ce5ead81945cbcd7a5",
+      "root": "corex",
+      "version": "1.14.0"
+    },
+    "tiktoken": {
+      "name": "tiktoken",
+      "record_sha256": "6c61fd0c4bd4d3f5e12746471e4e678c87a14897963cb000ca4647d3d6840b4c",
+      "root": "corex",
+      "version": "0.12.0"
+    },
+    "torch": {
+      "name": "torch",
+      "record_sha256": "f3f3ef5d2b7ad625e67a2b6316dc2d107fba0ac77c6db0f049d608973169a6ca",
+      "root": "corex",
+      "version": "2.7.1+corex.4.4.0"
+    },
+    "torchaudio": {
+      "name": "torchaudio",
+      "record_sha256": "4eb2be4c277b3354a93491d16d6a145c2a5590d17b8d296f0a67e903d0776975",
+      "root": "corex",
+      "version": "2.7.1+corex.4.4.0"
+    },
+    "tqdm": {
+      "name": "tqdm",
+      "record_sha256": "891bb9b78740d1179a78e6bc992f7f90393b8def8d7512125c2f1acfa5775324",
+      "root": "corex",
+      "version": "4.67.3"
+    },
+    "triton": {
+      "name": "triton",
+      "record_sha256": "a2751e11fb61921b55242a1f1b7c042c74bc2078fa7e90cdca2f0b53f7f4439b",
+      "root": "corex",
+      "version": "3.1.0+corex.4.4.0"
+    },
+    "typing-extensions": {
+      "name": "typing_extensions",
+      "record_sha256": "2352b47f18e06fd9d677ed80fdd0bee03f752d2472f886685a6a6d7ae48d8662",
+      "root": "corex",
+      "version": "4.15.0"
+    },
+    "typing-inspection": {
+      "name": "typing-inspection",
+      "record_sha256": "79fbc5684fe06c531ca7f5505dad2daae5a326b4dcd3c1854097c54ea63b399d",
+      "root": "corex",
+      "version": "0.4.2"
+    },
+    "urllib3": {
+      "name": "urllib3",
+      "record_sha256": "54aa2f0d9278347e1e94efe1874fc3f7061a0b899c62761c51af9259d877cb25",
+      "root": "corex",
+      "version": "2.6.3"
+    },
+    "uvicorn": {
+      "name": "uvicorn",
+      "record_sha256": "a6aa792d9a29f3c9ffff2f6c3aa35eb08186c45d535b94cd4ef313190c19d515",
+      "root": "corex",
+      "version": "0.40.0"
+    },
+    "zipp": {
+      "name": "zipp",
+      "record_sha256": "d549a2c589d72967b052a281c315cf5e5a53b6275e3e0054c975c1177392dbc2",
+      "root": "system",
+      "version": "4.1.0"
+    }
+  },
+  "schema_version": 1
+}

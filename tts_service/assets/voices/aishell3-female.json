@@ -13,6 +13,10 @@
       "gender": "female",
       "accent": "north"
     },
+    "transcript_index": {
+      "path": "train/content.txt",
+      "sha256": "ed70f67d5558124ee22e609260177eaf20aa63391dd9df8df0a7e22b9213aca0"
+    },
     "utterances": [
       {
         "path": "train/wav/SSB0005/SSB00050095.wav",

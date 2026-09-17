@@ -4,7 +4,7 @@
 import argparse
 from array import array
 import hashlib
-from importlib.metadata import version
+from importlib.metadata import distributions, version
 import ipaddress
 import json
 import math
@@ -24,6 +24,11 @@ KEY = ROOT / "runtime/api_key"
 PYTHON = ROOT / ".venv/bin/python"
 VENV_SITE = ROOT / ".venv/lib" / f"python{sys.version_info.major}.{sys.version_info.minor}" / "site-packages"
 COREX = Path("/usr/local/corex")
+BASE_PACKAGE_ROOTS = {
+    "corex": (COREX / "lib64/python3/dist-packages").resolve(),
+    "system": Path("/usr/local/lib/python3.10/site-packages").resolve(),
+}
+LOCK_FILES = (ROOT / "requirements-build.lock", ROOT / "requirements.lock")
 # This host exports CoreX through PYTHONPATH globally.  Put the service's pinned
 # frontend packages ahead of that vendor directory while continuing to import
 # torch and torchaudio from CoreX.
@@ -57,7 +62,8 @@ EXPECTED = {
 REQUIRED_MODEL_FILES = (
     "cosyvoice3.yaml", "config.json", "llm.pt", "flow.pt", "hift.pt", "campplus.onnx",
     "speech_tokenizer_v3.onnx", "CosyVoice-BlankEN/config.json",
-    "CosyVoice-BlankEN/model.safetensors", "CosyVoice-BlankEN/merges.txt",
+    "CosyVoice-BlankEN/generation_config.json", "CosyVoice-BlankEN/model.safetensors",
+    "CosyVoice-BlankEN/merges.txt",
     "CosyVoice-BlankEN/tokenizer_config.json", "CosyVoice-BlankEN/vocab.json",
 )
 
@@ -85,10 +91,98 @@ def revision(value, name):
         raise ValueError(f"invalid {name}")
 
 
+def canonical_package_name(value):
+    return re.sub(r"[-_.]+", "-", value).lower()
+
+
+def locked_packages(lock_files=None):
+    if lock_files is None:
+        lock_files = LOCK_FILES
+    packages = {}
+    for lock_path in lock_files:
+        for line in Path(lock_path).read_text().splitlines():
+            match = re.match(r"([A-Za-z0-9_.-]+)==([^ \\]+)", line)
+            if match:
+                packages[canonical_package_name(match.group(1))] = match.group(2)
+    if not packages:
+        raise ValueError("Python package locks are empty")
+    return packages
+
+
+def distribution_map(path):
+    found = {}
+    for package in distributions(path=[str(path)]):
+        name = canonical_package_name(package.metadata["Name"])
+        if name in found:
+            raise ValueError(f"duplicate Python distribution in {path}: {name}")
+        found[name] = package
+    return found
+
+
+def read_base_package_manifest(cfg):
+    path = Path(cfg["base_packages"])
+    if not path.is_absolute() or not path.is_file():
+        raise ValueError("base_packages must be an existing absolute file")
+    manifest = json.loads(path.read_text())
+    packages = manifest.get("packages")
+    if manifest.get("schema_version") != 1 or not isinstance(packages, dict) or not packages:
+        raise ValueError("invalid base package manifest")
+    for key, item in packages.items():
+        if (canonical_package_name(key) != key
+                or not isinstance(item, dict)
+                or set(item) != {"name", "version", "root", "record_sha256"}
+                or canonical_package_name(item.get("name", "")) != key
+                or not isinstance(item.get("version"), str)
+                or not item["version"]
+                or item.get("root") not in BASE_PACKAGE_ROOTS
+                or not re.fullmatch(r"[0-9a-f]{64}", item.get("record_sha256", ""))):
+            raise ValueError(f"invalid base package manifest entry: {key}")
+    return packages
+
+
+def validate_local_packages():
+    expected = locked_packages()
+    installed = distribution_map(VENV_SITE)
+    permitted_tools = {"pip", "setuptools"}
+    actual = set(installed) - permitted_tools
+    if actual != set(expected):
+        missing = sorted(set(expected) - actual)
+        extra = sorted(actual - set(expected))
+        raise ValueError(f"service-local package set mismatch: missing={missing}, extra={extra}")
+    for name, expected_version in expected.items():
+        actual_version = installed[name].version
+        if actual_version != expected_version:
+            raise ValueError(
+                f"{name} version mismatch: expected {expected_version}, got {actual_version}"
+            )
+
+
+def validate_base_packages(cfg):
+    packages = read_base_package_manifest(cfg)
+    installed_by_root = {
+        root_name: distribution_map(root_path)
+        for root_name, root_path in BASE_PACKAGE_ROOTS.items()
+    }
+    for name, expected in packages.items():
+        package = installed_by_root[expected["root"]].get(name)
+        if package is None:
+            raise ValueError(f"base package is missing: {name}")
+        if package.version != expected["version"]:
+            raise ValueError(
+                f"{name} version mismatch: expected {expected['version']}, got {package.version}"
+            )
+        record = next((Path(package.locate_file(item)) for item in package.files or ()
+                       if str(item).endswith(".dist-info/RECORD")), None)
+        if (record is None or not record.is_file()
+                or BASE_PACKAGE_ROOTS[expected["root"]] not in record.resolve().parents
+                or sha256(record) != expected["record_sha256"]):
+            raise ValueError(f"base package RECORD mismatch: {name}")
+
+
 def resolve_config_paths(cfg, config_path):
     """Resolve checkout-owned paths relative to the config file."""
     base = Path(config_path).resolve().parent
-    for key in ("source", "voice_manifest", "prompt_wav"):
+    for key in ("source", "voice_manifest", "prompt_wav", "base_packages"):
         value = cfg.get(key)
         if not isinstance(value, str) or not value:
             raise ValueError(f"invalid {key}")
@@ -138,6 +232,36 @@ def validate_voice_audio(path, derived):
         noise_dbfs = 20 * math.log10(max(rms, 1.0) / 32767)
         if noise_dbfs > -45:
             raise ValueError("fixed voice edge noise exceeds -45 dBFS")
+    frame_size = sample_rate // 50
+    frame_rms = []
+    active_end = len(samples) - last_active
+    for offset in range(first_active, active_end - frame_size + 1, frame_size):
+        frame = samples[offset:offset + frame_size]
+        frame_rms.append(math.sqrt(sum(value * value for value in frame) / len(frame)))
+    if len(frame_rms) < 20:
+        raise ValueError("fixed voice has too little speech for a noise estimate")
+    frame_rms.sort()
+    quiet_count = max(1, len(frame_rms) // 20)
+    speech_count = max(1, len(frame_rms) // 2)
+    noise_rms = math.sqrt(sum(value * value for value in frame_rms[:quiet_count])
+                          / quiet_count)
+    speech_rms = math.sqrt(sum(value * value for value in frame_rms[-speech_count:])
+                           / speech_count)
+    snr_db = 20 * math.log10(max(speech_rms, 1.0) / max(noise_rms, 1.0))
+    if snr_db < 25:
+        raise ValueError("fixed voice estimated SNR is below 25 dB")
+
+
+def validate_transcript_index(manifest, content):
+    transcripts = {}
+    for line in content.splitlines():
+        fields = line.split()
+        if len(fields) >= 3 and len(fields) % 2 == 1:
+            transcripts[fields[0]] = "".join(fields[1::2])
+    for item in manifest["dataset"]["utterances"]:
+        filename = Path(item["path"]).name
+        if transcripts.get(filename) != item["transcript"]:
+            raise ValueError(f"AISHELL-3 transcript mismatch: {filename}")
 
 
 def read_voice_manifest(cfg, *, require_audio):
@@ -147,6 +271,8 @@ def read_voice_manifest(cfg, *, require_audio):
         raise ValueError("voice_manifest must be an existing absolute file")
     if not prompt_wav.is_absolute():
         raise ValueError("prompt_wav must be an absolute path")
+    if not re.fullmatch(r"[0-9a-f]{64}", cfg.get("voice_manifest_sha256", "")):
+        raise ValueError("invalid fixed voice manifest checksum")
     manifest = json.loads(manifest_path.read_text())
     if manifest.get("voice_id") != cfg["voice_id"] or cfg["voice_id"] != "aishell3-female":
         raise ValueError("fixed voice ID mismatch")
@@ -161,6 +287,10 @@ def read_voice_manifest(cfg, *, require_audio):
         raise ValueError("unexpected AISHELL-3 voice provenance")
     revision(dataset.get("revision"), "AISHELL-3 revision")
     utterances = dataset.get("utterances")
+    transcript_index = dataset.get("transcript_index", {})
+    if (not isinstance(transcript_index.get("path"), str)
+            or not re.fullmatch(r"[0-9a-f]{64}", transcript_index.get("sha256", ""))):
+        raise ValueError("invalid AISHELL-3 transcript index")
     if not isinstance(utterances, list) or not utterances:
         raise ValueError("voice manifest has no utterances")
     for item in utterances:
@@ -192,6 +322,8 @@ def read_voice_manifest(cfg, *, require_audio):
         if not prompt_wav.is_file() or sha256(prompt_wav) != derived["sha256"]:
             raise ValueError("fixed voice audio mismatch")
         validate_voice_audio(prompt_wav, derived)
+    if sha256(manifest_path) != cfg["voice_manifest_sha256"]:
+        raise ValueError("fixed voice manifest mismatch")
     return manifest
 
 
@@ -210,6 +342,7 @@ def config(*, require_artifacts=True):
     positive(cfg, "session_idle_timeout_seconds", integer=True, maximum=86400)
     positive(cfg, "text_queue_chunks", integer=True, maximum=1024)
     positive(cfg, "text_queue_timeout_seconds", integer=True, maximum=300)
+    positive(cfg, "output_timeout_seconds", integer=True, maximum=300)
     positive(cfg, "max_concurrency", integer=True, maximum=4)
     positive(cfg, "minimum_free_memory_mb", integer=True, maximum=32768)
     revision(cfg["model_revision"], "model_revision")
@@ -228,6 +361,7 @@ def config(*, require_artifacts=True):
             or not all(re.fullmatch(r"[0-9a-f]{64}", value or "")
                        for value in cfg["model_checksums"].values())):
         raise ValueError("model_checksums must pin every required model artifact")
+    read_base_package_manifest(cfg)
 
     model, source = Path(cfg["model"]), Path(cfg["source"])
     if not model.is_absolute():
@@ -294,6 +428,16 @@ def prepare_voice(cfg):
 
     manifest = read_voice_manifest(cfg, require_audio=False)
     dataset = manifest["dataset"]
+    transcript_index = dataset["transcript_index"]
+    index_path = Path(hf_hub_download(
+        repo_id=dataset["repository"],
+        repo_type="dataset",
+        revision=dataset["revision"],
+        filename=transcript_index["path"],
+    ))
+    if sha256(index_path) != transcript_index["sha256"]:
+        raise ValueError("AISHELL-3 transcript index mismatch")
+    validate_transcript_index(manifest, index_path.read_text())
     segments = []
     for item in dataset["utterances"]:
         source = Path(hf_hub_download(
@@ -332,6 +476,8 @@ def prepare_voice(cfg):
 def check(cfg):
     if Path(sys.executable).resolve() != PYTHON.resolve():
         raise ValueError(f"run this command with {PYTHON}")
+    validate_local_packages()
+    validate_base_packages(cfg)
     for package, expected in EXPECTED.items():
         actual = version(package)
         if actual != expected:

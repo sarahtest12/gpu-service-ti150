@@ -137,6 +137,15 @@ async def close_iterator(iterator):
         await asyncio.to_thread(close)
 
 
+async def send_audio_chunk(websocket, chunk, timeout):
+    try:
+        await asyncio.wait_for(websocket.send_bytes(chunk), timeout)
+    except asyncio.TimeoutError as error:
+        raise ProtocolError(
+            "output_timeout", "timed out sending audio to the client", fatal=True,
+        ) from error
+
+
 async def run_utterance(websocket, engine, cfg, first_text, request_id, utterance_id):
     text_stream = TextStream(cfg["text_queue_chunks"])
     text_stream.append(first_text, timeout=0)
@@ -155,19 +164,6 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
             completed, _ = await asyncio.wait(
                 (receive_task, output_task), return_when=asyncio.FIRST_COMPLETED,
             )
-
-            if output_task in completed:
-                kind, chunk = output_task.result()
-                if kind == "done":
-                    if not input_done:
-                        raise ProtocolError(
-                            "inference_failed", "TTS inference ended before input.done", fatal=True,
-                        )
-                    await stop_task(receive_task)
-                    await websocket.send_json({"type": "audio.done", "utterance_id": utterance_id})
-                    return
-                await websocket.send_bytes(chunk)
-                output_task = asyncio.create_task(asyncio.to_thread(next_output, iterator))
 
             if receive_task in completed:
                 try:
@@ -203,6 +199,19 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
                         None if input_done else cfg["input_timeout_seconds"],
                     ),
                 )
+
+            if output_task in completed:
+                kind, chunk = output_task.result()
+                if kind == "done":
+                    if not input_done:
+                        raise ProtocolError(
+                            "inference_failed", "TTS inference ended before input.done", fatal=True,
+                        )
+                    await stop_task(receive_task)
+                    await websocket.send_json({"type": "audio.done", "utterance_id": utterance_id})
+                    return
+                await send_audio_chunk(websocket, chunk, cfg["output_timeout_seconds"])
+                output_task = asyncio.create_task(asyncio.to_thread(next_output, iterator))
     except EOFError:
         text_stream.cancel()
         raise

@@ -1,3 +1,21 @@
+diff --git a/cosyvoice/cli/cosyvoice.py b/cosyvoice/cli/cosyvoice.py
+index 7ab04a7..8a75103 100644
+--- a/cosyvoice/cli/cosyvoice.py
++++ b/cosyvoice/cli/cosyvoice.py
+@@ -19 +18,0 @@ from hyperpyyaml import load_hyperpyyaml
+-from modelscope import snapshot_download
+@@ -33 +32 @@ class CosyVoice:
+-            model_dir = snapshot_download(model_dir)
++            raise FileNotFoundError('CosyVoice model directory not found: {}'.format(model_dir))
+@@ -145 +144 @@ class CosyVoice2(CosyVoice):
+-            model_dir = snapshot_download(model_dir)
++            raise FileNotFoundError('CosyVoice model directory not found: {}'.format(model_dir))
+@@ -195 +194 @@ class CosyVoice3(CosyVoice2):
+-            model_dir = snapshot_download(model_dir)
++            raise FileNotFoundError('CosyVoice model directory not found: {}'.format(model_dir))
+@@ -230 +229 @@ def AutoModel(**kwargs):
+-        kwargs['model_dir'] = snapshot_download(kwargs['model_dir'])
++        raise FileNotFoundError('CosyVoice model directory not found: {}'.format(kwargs['model_dir']))
 diff --git a/cosyvoice/cli/frontend.py b/cosyvoice/cli/frontend.py
 index 6d397cc..6ce258d 100644
 --- a/cosyvoice/cli/frontend.py

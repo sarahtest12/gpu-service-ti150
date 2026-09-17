@@ -107,6 +107,7 @@ AISHELL-3 的 Apache-2.0 女声 SSB0005，服务端启动时注册，客户端�
 | `input_too_long` | utterance 合计超过 4096 字符；服务端取消当前 utterance | false |
 | `invalid_state` | 事件不适用于当前状态 | false |
 | `input_backpressure` | 有界文本队列在 30 秒内不能接收新块 | false |
+| `output_timeout` | 向客户端发送 PCM 持续阻塞超过 30 秒 | true |
 | `message_too_large` | 单个 WebSocket 文本消息超过 16384 字节 | false |
 | `input_timeout` | 活跃 utterance 等待后续文本超过 300 秒 | true |
 | `inference_failed` | 模型或输出处理失败 | true |
@@ -133,7 +134,8 @@ stateDiagram-v2
 
 网关和 TTS 服务都只允许 1 个活跃 WebSocket。单消息上限为 16384 字节；文本桥接队列最多 16
 个块，写入等待上限为 30 秒。活跃 utterance 等待文本的上限为 300 秒，空闲会话等待下一事件的
-上限为 3600 秒，网关读写空闲超时也是 3600 秒。客户端断开时服务端取消文本输入并排空厂商
+上限为 3600 秒，单个 PCM 帧发送上限为 30 秒，网关读写空闲超时是 3600 秒。客户端断开时
+服务端取消文本输入并排空厂商
 生成器以释放缓存，在清理完成前并发槽不会释放。
 
 ## 监控口径

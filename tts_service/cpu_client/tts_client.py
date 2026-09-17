@@ -1,15 +1,78 @@
 """CPU-backend client for the authenticated CosyVoice3 realtime WebSocket."""
 
+from collections import deque
+from collections.abc import Sequence
 import json
 import math
 from pathlib import Path
 import ssl
 import struct
 import threading
+import time
 import urllib.parse
 
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect as websocket_connect
+
+
+class TtsTextInput:
+    """Bounded, cancel-aware text source for an utterance fed incrementally."""
+
+    def __init__(self, max_chunks=16):
+        if type(max_chunks) is not int or max_chunks < 1:
+            raise ValueError("max_chunks must be a positive integer")
+        self._max_chunks = max_chunks
+        self._items = deque()
+        self._finished = False
+        self._cancelled = False
+        self._condition = threading.Condition()
+
+    def append(self, text, timeout=None):
+        if timeout is not None and (isinstance(timeout, bool)
+                                    or not isinstance(timeout, (int, float))
+                                    or not math.isfinite(timeout) or timeout < 0):
+            raise ValueError("timeout must be non-negative and finite")
+        deadline = None if timeout is None else time.monotonic() + timeout
+        with self._condition:
+            while len(self._items) >= self._max_chunks and not self._finished:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    raise TimeoutError("TTS text input queue is full")
+                self._condition.wait(remaining)
+            if self._finished:
+                raise RuntimeError("TTS text input is closed")
+            self._items.append(text)
+            self._condition.notify_all()
+
+    def finish(self):
+        with self._condition:
+            self._finished = True
+            self._condition.notify_all()
+
+    def cancel(self):
+        with self._condition:
+            self._cancelled = True
+            self._finished = True
+            self._items.clear()
+            self._condition.notify_all()
+
+    @property
+    def cancelled(self):
+        with self._condition:
+            return self._cancelled
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        with self._condition:
+            while not self._items and not self._finished:
+                self._condition.wait()
+            if self._cancelled or not self._items:
+                raise StopIteration
+            value = self._items.popleft()
+            self._condition.notify_all()
+            return value
 
 
 class TtsRealtimeClient:
@@ -103,7 +166,13 @@ class TtsRealtimeClient:
             sender_errors = []
             sender = None
             completed = False
+            source = text_chunks if isinstance(text_chunks, TtsTextInput) else None
             try:
+                if source is None and (isinstance(text_chunks, (str, bytes))
+                                       or not isinstance(text_chunks, Sequence)):
+                    raise ValueError(
+                        "streaming text_chunks must use TtsTextInput; finite input must be a sequence"
+                    )
                 try:
                     iterator = iter(text_chunks)
                     first = next(iterator)
@@ -118,6 +187,8 @@ class TtsRealtimeClient:
                         self._send_text(connection, first)
                         for value in iterator:
                             self._send_text(connection, self._validate_text(value))
+                        if source is not None and source.cancelled:
+                            return
                         connection.send(json.dumps({"type": "input.done"}))
                     except Exception as error:
                         sender_errors.append(error)
@@ -173,7 +244,11 @@ class TtsRealtimeClient:
                 raise RuntimeError("TTS connection failed during synthesis") from None
             finally:
                 if not completed:
+                    if source is not None:
+                        source.cancel()
                     self._disconnect(connection)
+                    if sender is not None and sender.is_alive():
+                        sender.join(timeout=min(self.timeout_seconds, 10))
                 with self._state_lock:
                     if self._active_token is token:
                         self._active_token = None

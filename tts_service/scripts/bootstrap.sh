@@ -9,17 +9,29 @@ TTS_MODEL_REVISION=29e01c4e8d000f4bcd70751be16fa94bf3d85a18
 cd "$TTS_PROJECT_DIR"
 umask 077
 
-if [[ -e .venv ]]; then
-  if ! .venv/bin/python -c 'import pathlib,sys; assert pathlib.Path(sys.prefix).resolve() == pathlib.Path.cwd()/".venv"' 2>/dev/null ||
-     ! .venv/bin/python -c 'import pathlib,sys; assert "VIRTUAL_ENV="+sys.argv[1]+"/.venv" in pathlib.Path(".venv/bin/activate").read_text()' "$TTS_PROJECT_DIR" 2>/dev/null; then
-    TTS_STALE_DIR="$TTS_PROJECT_DIR/.venv.stale-$(date -u +%Y%m%dT%H%M%SZ)-$$"
-    mv .venv "$TTS_STALE_DIR"
-    printf 'Preserved previous environment: %s\n' "$TTS_STALE_DIR"
+TTS_PREVIOUS_VENV=""
+restore_previous_venv() {
+  TTS_BOOTSTRAP_STATUS=$?
+  if [[ $TTS_BOOTSTRAP_STATUS -ne 0 && -n "$TTS_PREVIOUS_VENV" ]]; then
+    if [[ -e .venv ]]; then
+      TTS_FAILED_VENV="$TTS_PROJECT_DIR/.venv.failed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+      mv .venv "$TTS_FAILED_VENV"
+      printf 'Preserved failed environment: %s\n' "$TTS_FAILED_VENV" >&2
+    fi
+    mv "$TTS_PREVIOUS_VENV" .venv
+    printf 'Restored previous environment after bootstrap failure.\n' >&2
   fi
+  exit "$TTS_BOOTSTRAP_STATUS"
+}
+trap restore_previous_venv EXIT
+
+# Rebuild from an empty environment on every provisioning run. Reusing a venv
+# can retain packages removed from the lock and silently change inference.
+if [[ -e .venv ]]; then
+  TTS_PREVIOUS_VENV="$TTS_PROJECT_DIR/.venv.stale-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  mv .venv "$TTS_PREVIOUS_VENV"
 fi
-if [[ ! -x .venv/bin/python ]]; then
-  /usr/local/bin/python3.10 -m venv --system-site-packages .venv
-fi
+/usr/local/bin/python3.10 -m venv --system-site-packages .venv
 
 # Install only the hash-locked Python/frontend layer. The environment continues
 # to use torch, torchaudio, FastAPI and CUDA from the vendor CoreX base image.
@@ -64,3 +76,8 @@ PY
 .venv/bin/python scripts/service.py prepare-voice
 .venv/bin/python scripts/service.py check
 .venv/bin/python scripts/service.py init-key
+
+trap - EXIT
+if [[ -n "$TTS_PREVIOUS_VENV" ]]; then
+  printf 'Preserved previous environment: %s\n' "$TTS_PREVIOUS_VENV"
+fi

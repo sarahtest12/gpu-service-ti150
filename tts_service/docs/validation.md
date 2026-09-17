@@ -7,7 +7,7 @@ AISHELL-3 Apache-2.0 女声 `aishell3-female`。
 ## 固定资源
 
 - 模型：`FunAudioLLM/Fun-CosyVoice3-0.5B-2512`，revision
-  `29e01c4e8d000f4bcd70751be16fa94bf3d85a18`。权重、ONNX、模型配置和 tokenizer 共 12 个
+  `29e01c4e8d000f4bcd70751be16fa94bf3d85a18`。权重、ONNX、模型配置和 tokenizer 共 13 个
   运行所需文件的 SHA-256 由 `config/server.json` 固定并经 `service.py check` 复验。
 - 源码：`QwenAudio/CosyVoice` revision
   `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`。四个运行时源码文件的补丁后 SHA-256
@@ -16,25 +16,30 @@ AISHELL-3 Apache-2.0 女声 `aishell3-female`。
   SHA-256 `61c805554489cac6a89438f2551a6e53ab71bf9205d4b7d0a70fd738c02441b1`。
 - 关键运行时：torch/torchaudio `2.7.1+corex.4.4.0`、ONNX Runtime `1.17.3`、
   transformers `4.51.3`、x-transformers `2.11.24`、pyworld `0.3.4`。
-- 服务自带 Python 包由两个 requirements lock 文件固定版本及安装包 SHA-256；已在新建的
+- 服务自带 Python 包由两个 requirements lock 文件固定版本及安装包 SHA-256；每次 bootstrap
+  都从空虚拟环境重建，并拒绝锁文件之外的残留包。50 个来自 BI150 CoreX/系统镜像的传递依赖由
+  `config/corex-packages.json` 固定版本、安装根和 RECORD SHA-256，启动时逐项复验。已在新建的
   Python 3.10 `--system-site-packages` 虚拟环境中以 `--require-hashes --no-deps` 完整安装，并
   成功导入 CosyVoice3、CoreX torch、CPU ONNX Runtime 和 pyworld。
 - 固定音色实测时长 7.792625 秒，峰值 12078，首尾静音各 0.2 秒，边缘噪声分别为
   -56.110 dBFS 与 -50.925 dBFS。启动门禁要求 PCM S16LE、24 kHz、单声道、5–10 秒、无削波、
-  首尾静音各 0.05–0.5 秒且边缘噪声不高于 -45 dBFS。
+  首尾静音各 0.05–0.5 秒、边缘噪声不高于 -45 dBFS且内部估算信噪比不低于 25 dB。音色清单
+  自身由配置中的 SHA-256 固定；bootstrap 还会下载固定 revision 的 AISHELL-3 转写索引并逐字核对。
 
-流式 generator 按官方实现直接进入 tokenizer，并明确跳过文本规范化前端。因此部署不安装会在
-启动时动态下载 FST 的 `wetext`；这避免离线服务启动时访问 ModelScope，不改变流式输入路径。
+流式 generator 按官方实现直接进入 tokenizer，并明确跳过文本规范化前端。WeText/Pynini 仍以
+哈希锁定，供非 generator 的固定参考文本规范化使用。运行时补丁删除了官方 `AutoModel` 的
+ModelScope 自动下载分支；服务只接受配置中已经按 revision 和 SHA-256 准备好的本地模型目录。
 
 ## CoreX 兼容补丁
 
-`patches/corex-runtime.patch` 包含三项从真机错误定位得到的最小修改：
+`patches/corex-runtime.patch` 包含四项部署修改：
 
 1. speech tokenizer ONNX 固定使用 CPU provider，避免加载本机没有的 CUDA ONNX provider。
 2. HiFi-GAN 的 f0 predictor 保留 float64 精度并移到 CPU。原实现的 GPU float64 Conv1d 在
    CoreX IXDNN 返回 `IXDNN_STATUS_BAD_PARAM`；其余 flow、LLM 与声码器仍在 GPU 运行。
 3. 流式 hop 增长改为每个 utterance 的局部变量。原实现会把 25 写回并增长到 100，导致同一
    长连接的后续 utterance 必须等待更多 token；修复后每条 utterance 都从 25 开始。
+4. 禁用 `AutoModel` 的模型名自动下载，只允许使用部署配置固定的现有本地目录。
 
 ## 模型级验证
 
@@ -105,17 +110,19 @@ utterance，首个 PCM 分别为 1.724061 秒、1.539448 秒和 1.529806 秒，�
 
 ## 独立审查后的加固复验
 
-独立审查后又补齐了客户端并发与重连隔离、活跃 utterance 可恢复错误清理、TTFT 排除文本队列
-等待、相对部署路径、模型与 tokenizer 全量哈希、固定音色声学门禁、GPU 可用显存和模型 FP16
-设备门禁。TTS 测试现为 38 项通过，网关测试 15 项通过（4 项需显式开启的真机集成测试跳过），
-监控测试 6 项通过；NGINX 配置检查、`service.py check` 和 `git diff --check` 均通过。
+独立审查后补齐了客户端取消与重连隔离、服务端收发同时完成时的状态竞争、PCM 发送超时、
+`generation_config.json` 哈希、固定音色官方转写与环境噪声门禁，以及 Python 环境复现检查。
+CosyVoice 运行时不再导入 ModelScope 或按模型名自动下载；bootstrap 从空虚拟环境安装 36 个
+哈希锁定的服务包，启动时再校验 50 个 CoreX/系统继承包。固定音色清单自身也由配置哈希固定。
 
-新进程 PID 2007663 在 GPU 0 占用 3848 MiB，所有算法、监控和网关均为 `managed: true`、
-`ready: true`。公共 WSS 严格双流复验中，首段长文本提交后保持输入开启：首 PCM 在 1.622377 秒
-到达，`input.done` 在 8.009065 秒发送，最终得到 1142400 字节 PCM，总耗时 34.382295 秒，
-SHA-256 为 `816603859a5ba4098583dec5a18b1a0016a2b15247d96cc2942cc01d76a74ccc`。
-另一次连接复用的后续 utterance 首 PCM 为 1.503471 秒。实时注入活跃态 `invalid_json` 后，服务端
-取消旧 utterance、不发送旧 `audio.done`，并在同一连接成功完成下一条 416640 字节的合成。
+最终 TTS 测试 48 项通过；网关测试 15 项通过（4 项需显式开启的真机集成测试跳过），监控测试
+6 项通过，OpenAPI 3.1.1 校验通过。NGINX 配置、`service.py check`、干净官方 revision 上的
+`git apply --check` 和 `git diff --check` 均通过。新进程 PID 2108870 已就绪，TTS 显存
+4188.013 MB；YOLO、VLM、RAG、ASR、TTS、监控和网关均为 `managed: true`、`ready: true`。
 
-最新监控快照中 TTS 状态为 `running`、显存 4102.029 MB，近 60 秒 TTFT 平均 64.2 ms、P95
-78.0 ms。该指标实现已扣除模型 token 生成器等待客户端追加文本的时间。
+重启后的第一次公共 WSS 请求包含模型热身：输入在 8.005937 秒结束，首 PCM 在 10.792735 秒
+到达，因此该次只记录为冷启动数据，不作为双流通过证据；同一连接的下一条首 PCM 为
+1.550774 秒。热身后再次保持输入开放 15 秒，首 PCM 在 1.640963 秒到达，`input.done` 在
+15.002580 秒发送，严格双向流式成立。最终输出 1194240 字节 PCM，总耗时 40.408167 秒，
+SHA-256 为 `20ea74f58ef0ef7ff9ff5928b97451915dbcdfbc662aa6518eee18935be6f7d9`。
+验证文本未出现在 TTS 或网关日志中。

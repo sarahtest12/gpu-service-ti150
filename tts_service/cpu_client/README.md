@@ -22,33 +22,44 @@ Web 后端可保持客户端对象并按顺序复用连接：
 
 ```python
 import os
-from tts_client import TtsRealtimeClient
+import threading
+from tts_client import TtsRealtimeClient, TtsTextInput
 
 with TtsRealtimeClient(
     "https://GPU_HOST:8443/tts",
     api_key=os.environ["GPU_API_KEY"],
     ca_file="/path/to/server.crt",
 ) as client:
-    def llm_text_chunks():
-        yield "欢迎使用，"
-        yield "这是双向流式语音服务。"
+    text_input = TtsTextInput()
+    text_input.append("欢迎使用，")
 
-    for pcm_chunk in client.synthesize(llm_text_chunks()):
+    def feed_llm_text():
+        # 在真实后端中，这里逐段读取 LLM 输出。
+        text_input.append("这是双向流式语音服务。")
+        text_input.finish()
+
+    producer = threading.Thread(target=feed_llm_text)
+    producer.start()
+    for pcm_chunk in client.synthesize(text_input):
         send_pcm_s16le_24000_mono_to_browser(pcm_chunk)
+    producer.join()
 
     # audio.done 后可在同一 WebSocket 上继续下一段。
     for pcm_chunk in client.synthesize(["第二段播报。"]):
         send_pcm_s16le_24000_mono_to_browser(pcm_chunk)
 ```
 
-`synthesize()` 在后台持续消费文本迭代器，同时在调用线程产出音频，因此上游 LLM 尚未结束文本
-输出时，CPU 后端就可以收到并转发首批 PCM。每次调用只对应一个 utterance；必须把返回迭代器
+`synthesize()` 在后台持续消费 `TtsTextInput`，同时在调用线程产出音频，因此上游 LLM 尚未结束
+文本输出时，CPU 后端就可以收到并转发首批 PCM。`TtsTextInput` 是有界且可取消的；流式调用必须
+使用它，已完整保存在内存中的短文本也可直接传 `list` 或 `tuple`。每次调用只对应一个 utterance；
+必须把返回迭代器
 消费到 `audio.done` 才能开始下一次调用。服务端错误、超时或协议错会关闭当前连接，调用方应新建
 客户端连接；不要自动重放已经开始的 utterance，以免重复播报。
 
 同一客户端的并发 `synthesize()` 会被拒绝。如果调用方提前停止消费或关闭返回迭代器，客户端会
-关闭当时的 WebSocket；仍在等待上游文本的旧发送线程只持有旧连接，不能把迟到文本写进随后建立
-的新会话。连接建立时客户端也会核对固定模型、音色和 PCM 元数据。
+关闭当时的 WebSocket、取消 `TtsTextInput` 并等待发送线程退出；旧请求不会留下等待文本的后台
+线程，也不能把迟到文本写进随后建立的新会话。连接建立时客户端还会核对固定模型、音色和 PCM
+元数据。
 
 GPU 端只允许一个活跃 TTS WebSocket。CPU 后端应集中管理这条连接并按业务优先级排队，不要让
 每个浏览器各自直连 GPU。`close()` 在空闲状态发送 `session.close`；上下文管理器会自动调用它。

@@ -17,7 +17,7 @@ from websockets.sync.server import serve as websocket_serve
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "cpu_client"))
 
-from tts_client import TtsRealtimeClient
+from tts_client import TtsRealtimeClient, TtsTextInput
 
 
 class TtsRealtimeClientTest(unittest.TestCase):
@@ -114,14 +114,19 @@ class TtsRealtimeClientTest(unittest.TestCase):
 
     def test_streams_text_and_audio_in_both_directions_and_reuses_connection(self):
         allow_second_text = threading.Event()
+        text_input = TtsTextInput()
+        text_input.append("第一段，")
 
-        def text_chunks():
-            yield "第一段，"
+        def feed_text():
             self.assertTrue(allow_second_text.wait(2))
-            yield "第二段。"
+            text_input.append("第二段。")
+            text_input.finish()
+
+        producer = threading.Thread(target=feed_text)
+        producer.start()
 
         with self.client() as client:
-            first_audio = client.synthesize(text_chunks())
+            first_audio = client.synthesize(text_input)
             self.assertEqual(next(first_audio), b"\x01\x00\x02\x00")
             self.assertFalse(any(event["type"] == "input.done" for event in self.messages))
             allow_second_text.set()
@@ -137,6 +142,8 @@ class TtsRealtimeClientTest(unittest.TestCase):
         self.assertEqual([event["type"] for event in self.messages],
                          ["input.text", "input.text", "input.done",
                           "input.text", "input.done", "session.close"])
+        producer.join(timeout=1)
+        self.assertFalse(producer.is_alive())
 
     def test_rejects_unsupported_session_audio_metadata(self):
         self.mode = "bad_metadata"
@@ -158,20 +165,16 @@ class TtsRealtimeClientTest(unittest.TestCase):
             self.assertTrue(b"".join(first))
 
     def test_abandoned_sender_cannot_write_into_reconnected_session(self):
-        release_old_text = threading.Event()
-
-        def blocked_text():
-            yield "旧请求。"
-            self.assertTrue(release_old_text.wait(2))
-            yield "不得进入新连接。"
+        blocked_text = TtsTextInput()
+        blocked_text.append("旧请求。")
 
         client = self.client()
         client.connect()
-        abandoned = client.synthesize(blocked_text())
+        abandoned = client.synthesize(blocked_text)
         self.assertTrue(next(abandoned))
         abandoned.close()
+        self.assertTrue(blocked_text.cancelled)
         client.connect()
-        release_old_text.set()
         self.assertTrue(b"".join(client.synthesize(["新请求。"])))
         client.close()
         self.assertEqual(self.connections, 2)
@@ -180,6 +183,25 @@ class TtsRealtimeClientTest(unittest.TestCase):
              if event["type"] == "input.text"],
             ["新请求。"],
         )
+
+    def test_rejects_an_uncancellable_streaming_iterator(self):
+        with self.client() as client:
+            with self.assertRaisesRegex(ValueError, "TtsTextInput"):
+                list(client.synthesize(iter(["不能安全取消。"])))
+
+    def test_cancel_aware_text_input_unblocks_a_waiting_sender(self):
+        source = TtsTextInput(max_chunks=1)
+        finished = threading.Event()
+
+        def consume():
+            list(source)
+            finished.set()
+
+        thread = threading.Thread(target=consume)
+        thread.start()
+        source.cancel()
+        self.assertTrue(finished.wait(1))
+        thread.join(timeout=1)
 
     def test_propagates_server_error_without_reusing_failed_connection(self):
         self.mode = "error"

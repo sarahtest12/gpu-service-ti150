@@ -1,5 +1,6 @@
 """CPU-only tests for the reusable TTS WebSocket protocol."""
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -19,7 +20,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from engine import CosyVoice3Engine
-from server import VendorPayloadFilter, create_app, load_runtime_config, validate_loaded_model
+from server import (ProtocolError, VendorPayloadFilter, create_app, load_runtime_config,
+                    send_audio_chunk, validate_loaded_model)
 
 
 class Tensor:
@@ -77,6 +79,18 @@ class InteractiveModel:
         yield {"tts_speech": Tensor([0.25, -0.25])}
 
 
+class DoneRaceModel:
+    def __init__(self):
+        self.model = FakeVendor()
+
+    def inference_zero_shot(self, text, *args, **kwargs):
+        iterator = iter(text)
+        next(iterator)
+        list(iterator)
+        if False:
+            yield None
+
+
 def configuration():
     cfg = json.loads((ROOT / "config/server.json").read_text())
     cfg.update({
@@ -114,6 +128,7 @@ class TtsServerTest(unittest.TestCase):
             path = Path(directory) / "server.json"
             path.write_text(json.dumps({
                 "source": "source",
+                "base_packages": "base-packages.json",
                 "voice_manifest": "voice.json",
                 "prompt_wav": "voice.wav",
             }))
@@ -122,6 +137,7 @@ class TtsServerTest(unittest.TestCase):
                 cfg = load_runtime_config(path)
         self.assertEqual(cfg["prompt_text"], "validated fixed prompt")
         self.assertEqual(cfg["source"], str((path.parent / "source").resolve()))
+        self.assertEqual(cfg["base_packages"], str((path.parent / "base-packages.json").resolve()))
         self.assertEqual(cfg["voice_manifest"], str((path.parent / "voice.json").resolve()))
         self.assertEqual(cfg["prompt_wav"], str((path.parent / "voice.wav").resolve()))
         read_manifest.assert_called_once_with(cfg, require_audio=True)
@@ -143,6 +159,16 @@ class TtsServerTest(unittest.TestCase):
         ):
             with self.subTest(model=model), self.assertRaisesRegex(RuntimeError, "GPU FP16"):
                 validate_loaded_model(model)
+
+    def test_stalled_audio_send_has_a_fatal_timeout(self):
+        class StalledWebSocket:
+            async def send_bytes(self, chunk):
+                await asyncio.Event().wait()
+
+        with self.assertRaises(ProtocolError) as caught:
+            asyncio.run(send_audio_chunk(StalledWebSocket(), b"pcm", 0.01))
+        self.assertEqual((caught.exception.code, caught.exception.fatal),
+                         ("output_timeout", True))
 
     def test_auth_internal_health_metrics_and_removed_http_business_routes(self):
         self.assertEqual(self.client.get("/health").status_code, 401)
@@ -192,6 +218,17 @@ class TtsServerTest(unittest.TestCase):
                 websocket.receive_json()
             self.assertEqual(caught.exception.code, 1000)
         self.assertEqual(len(self.model.calls), 2)
+
+    def test_simultaneous_input_done_and_model_completion_succeeds(self):
+        engine = CosyVoice3Engine(DoneRaceModel(), configuration())
+        client = TestClient(create_app(engine, configuration(), "internal-secret"))
+        with client.websocket_connect("/realtime", headers=self.headers) as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "input.text", "text": "同时完成。"})
+            websocket.send_json({"type": "input.done"})
+            self.assertEqual(websocket.receive_json()["type"], "audio.start")
+            done = websocket.receive_json()
+            self.assertEqual(done["type"], "audio.done")
 
     def test_recoverable_input_errors_leave_the_session_usable(self):
         with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
