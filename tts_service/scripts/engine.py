@@ -166,10 +166,11 @@ class CosyVoice3Engine:
                 try:
                     for _ in output:
                         pass
-                except Exception:
-                    LOG.exception(
-                        "TTS generator cleanup failed request_id=%s utterance_id=%s",
+                except Exception as error:
+                    LOG.error(
+                        "TTS generator cleanup failed request_id=%s utterance_id=%s error_type=%s",
                         request_id or "-", utterance_id or "-",
+                        type(error).__name__,
                     )
             with self._metric_lock:
                 self._measure_first_token = False

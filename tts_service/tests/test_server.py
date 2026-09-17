@@ -1,4 +1,4 @@
-"""CPU-only tests for request validation, auth, streaming and concurrency."""
+"""CPU-only tests for the reusable TTS WebSocket protocol."""
 
 import json
 import logging
@@ -9,10 +9,14 @@ import unittest
 
 import numpy as np
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from server import CosyVoiceEngine, TTS_TTFT, VendorPayloadFilter, create_app
+
+from engine import CosyVoice3Engine
+from server import VendorPayloadFilter, create_app
 
 
 class Tensor:
@@ -32,80 +36,213 @@ class Tensor:
         return self.values
 
 
-class FakeModel:
-    def __init__(self):
-        self.calls = []
-        self.started = threading.Event()
-        self.release = threading.Event()
-        self.pause = False
-        self.drained = threading.Event()
+class FakeLlm:
+    def inference_bistream(self, text):
+        yield 101
 
-    def inference_instruct(self, text, voice, instructions, *, stream, speed):
-        self.calls.append((text, voice, instructions, stream, speed))
-        self.started.set()
+
+class FakeVendor:
+    def __init__(self):
+        self.llm = FakeLlm()
+
+
+class InteractiveModel:
+    """Yield once after the first text chunk, then wait for input.done."""
+
+    def __init__(self):
+        self.model = FakeVendor()
+        self.calls = []
+        self.first_text = threading.Event()
+        self.finished_text = threading.Event()
+        self.pause_after_done = False
+        self.release = threading.Event()
+        self.fail = False
+
+    def inference_zero_shot(self, text, prompt_text, prompt_wav, zero_shot_spk_id="",
+                            stream=False, speed=1.0):
+        self.calls.append((prompt_text, prompt_wav, zero_shot_spk_id, stream, speed))
+        iterator = iter(text)
+        next(iterator)
+        self.first_text.set()
+        if self.fail:
+            raise RuntimeError("sensitive-internal-model-failure")
         yield {"tts_speech": Tensor([-1.0, 0.0, 1.0])}
-        if self.pause:
+        list(iterator)
+        self.finished_text.set()
+        if self.pause_after_done:
             self.release.wait(2)
         yield {"tts_speech": Tensor([0.25, -0.25])}
-        self.drained.set()
 
 
 def configuration():
     cfg = json.loads((ROOT / "config/server.json").read_text())
-    cfg["max_input_characters"] = 20
-    cfg["max_instruction_characters"] = 20
+    cfg.update({
+        "model_name": "fun-cosyvoice3-0.5b-2512",
+        "voice_id": "aishell3-female",
+        "sample_rate_hz": 24000,
+        "prompt_text": "固定参考音频的准确文本。",
+        "prompt_wav": "/tmp/aishell3-female.wav",
+        "max_input_chunk_characters": 1024,
+        "max_utterance_characters": 4096,
+        "max_message_bytes": 16384,
+        "input_timeout_seconds": 2,
+        "text_queue_chunks": 4,
+        "text_queue_timeout_seconds": 1,
+        "max_concurrency": 1,
+    })
     return cfg
 
 
 class TtsServerTest(unittest.TestCase):
     def setUp(self):
-        self.model = FakeModel()
-        self.engine = CosyVoiceEngine(self.model, configuration())
+        self.model = InteractiveModel()
+        self.engine = CosyVoice3Engine(self.model, configuration())
         self.client = TestClient(create_app(self.engine, configuration(), "internal-secret"))
         self.headers = {"Authorization": "Bearer internal-secret", "X-Request-ID": "request-test"}
-        self.payload = {"model": "cosyvoice-300m-instruct", "input": "测试语音", "voice": "中文女",
-                        "instructions": "自然播报", "response_format": "pcm", "stream": True, "speed": 1.0}
 
-    def test_auth_health_and_voice_list(self):
+    def receive_utterance_tail(self, websocket):
+        self.assertIsInstance(websocket.receive_bytes(), bytes)
+        event = websocket.receive_json()
+        self.assertEqual(event["type"], "audio.done")
+        return event
+
+    def test_auth_internal_health_metrics_and_removed_http_business_routes(self):
         self.assertEqual(self.client.get("/health").status_code, 401)
-        health = self.client.get("/health", headers=self.headers)
-        self.assertEqual(health.json(), {"status": "ok"})
-        voices = self.client.get("/v1/audio/voices", headers=self.headers).json()["data"]
-        self.assertEqual({item["id"] for item in voices}, set(configuration()["voices"]))
+        self.assertEqual(self.client.get("/health", headers=self.headers).json(), {"status": "ok"})
         metrics = self.client.get("/metrics", headers=self.headers)
         self.assertEqual(metrics.status_code, 200)
         self.assertIn("tts_time_to_first_token_seconds", metrics.text)
-        self.assertEqual(self.client.get("/metrics").status_code, 401)
+        self.assertEqual(self.client.post("/v1/audio/speech", headers=self.headers).status_code, 404)
+        self.assertEqual(self.client.get("/v1/audio/voices", headers=self.headers).status_code, 404)
 
-    def test_records_only_the_first_speech_token_per_request(self):
-        class Llm:
-            def inference(self):
-                yield 1
-                yield 2
+    def test_rejects_bad_websocket_auth(self):
+        with self.assertRaises(WebSocketDisconnect) as caught:
+            with self.client.websocket_connect("/realtime") as websocket:
+                websocket.receive_json()
+        self.assertEqual(caught.exception.code, 1008)
 
-        class Vendor:
-            def __init__(self):
-                self.llm = Llm()
+    def test_streams_audio_before_done_and_reuses_the_connection(self):
+        with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
+            created = websocket.receive_json()
+            self.assertEqual(created, {
+                "type": "session.created",
+                "session_id": created["session_id"],
+                "model": "fun-cosyvoice3-0.5b-2512",
+                "voice": "aishell3-female",
+                "audio": {"format": "pcm_s16le", "sample_rate_hz": 24000, "channels": 1},
+            })
 
-        class Wrapper:
-            def __init__(self):
-                self.model = Vendor()
+            websocket.send_json({"type": "input.text", "text": "第一段足够长的文本。"})
+            start = websocket.receive_json()
+            self.assertEqual(start["type"], "audio.start")
+            first_pcm = websocket.receive_bytes()
+            self.assertEqual(np.frombuffer(first_pcm, dtype="<i2").tolist(), [-32767, 0, 32767])
+            self.assertFalse(self.model.finished_text.is_set())
+            websocket.send_json({"type": "input.text", "text": "继续追加。"})
+            websocket.send_json({"type": "input.done"})
+            done = self.receive_utterance_tail(websocket)
+            self.assertEqual(done["utterance_id"], start["utterance_id"])
 
-        engine = CosyVoiceEngine(Wrapper(), configuration())
+            websocket.send_json({"type": "input.text", "text": "第二个请求。"})
+            second_start = websocket.receive_json()
+            self.assertEqual(second_start["type"], "audio.start")
+            websocket.receive_bytes()
+            websocket.send_json({"type": "input.done"})
+            self.receive_utterance_tail(websocket)
+            websocket.send_json({"type": "session.close"})
+            with self.assertRaises(WebSocketDisconnect) as caught:
+                websocket.receive_json()
+            self.assertEqual(caught.exception.code, 1000)
+        self.assertEqual(len(self.model.calls), 2)
 
-        def count():
-            return next(sample.value for family in TTS_TTFT.collect()
-                        for sample in family.samples if sample.name.endswith("_count"))
+    def test_recoverable_input_errors_leave_the_session_usable(self):
+        with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
+            websocket.receive_json()
+            websocket.send_text("{")
+            self.assertEqual(websocket.receive_json()["code"], "invalid_json")
+            websocket.send_bytes(b"not-json")
+            self.assertEqual(websocket.receive_json()["code"], "invalid_message")
+            invalid = [
+                {"type": "unknown"},
+                {"type": "input.text", "text": "  "},
+                {"type": "input.text", "text": "坏<|endoftext|>文本"},
+                {"type": "input.text", "text": "字" * 1025},
+                {"type": "input.done"},
+            ]
+            for message in invalid:
+                websocket.send_json(message)
+                error = websocket.receive_json()
+                self.assertEqual(error["type"], "error")
+                self.assertFalse(error["fatal"])
 
-        before = count()
-        with engine._metric_lock:
-            engine._measure_first_token = True
-        self.assertEqual(list(engine.model.model.llm.inference()), [1, 2])
-        self.assertEqual(count(), before + 1)
-        self.assertEqual(list(engine.model.model.llm.inference()), [1, 2])
-        self.assertEqual(count(), before + 1)
+            websocket.send_json({"type": "input.text", "text": "错误后仍可使用。"})
+            self.assertEqual(websocket.receive_json()["type"], "audio.start")
+            websocket.receive_bytes()
+            websocket.send_text("{")
+            self.assertEqual(websocket.receive_json()["code"], "invalid_json")
+            websocket.send_json({"type": "input.done"})
+            self.receive_utterance_tail(websocket)
 
-    def test_vendor_payload_text_is_not_logged(self):
+    def test_rejects_text_after_done_until_audio_done(self):
+        self.model.pause_after_done = True
+        with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "input.text", "text": "当前请求。"})
+            websocket.receive_json()
+            websocket.receive_bytes()
+            websocket.send_json({"type": "input.done"})
+            self.assertTrue(self.model.finished_text.wait(1))
+            websocket.send_json({"type": "input.text", "text": "发送得太早。"})
+            error = websocket.receive_json()
+            self.assertEqual((error["type"], error["code"], error["fatal"]),
+                             ("error", "invalid_state", False))
+            self.model.release.set()
+            self.receive_utterance_tail(websocket)
+
+    def test_limits_total_utterance_characters(self):
+        with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "input.text", "text": "字" * 1024})
+            websocket.receive_json()
+            websocket.receive_bytes()
+            for _ in range(3):
+                websocket.send_json({"type": "input.text", "text": "字" * 1024})
+            websocket.send_json({"type": "input.text", "text": "多"})
+            error = websocket.receive_json()
+            self.assertEqual(error["code"], "input_too_long")
+            self.assertFalse(error["fatal"])
+            self.receive_utterance_tail(websocket)
+
+    def test_second_connection_is_rejected_until_first_closes(self):
+        with self.client.websocket_connect("/realtime", headers=self.headers) as first:
+            first.receive_json()
+            with self.assertRaises(WebSocketDisconnect) as caught:
+                with self.client.websocket_connect("/realtime", headers=self.headers) as second:
+                    second.receive_json()
+            self.assertEqual(caught.exception.code, 1013)
+        with self.client.websocket_connect("/realtime", headers=self.headers) as next_session:
+            self.assertEqual(next_session.receive_json()["type"], "session.created")
+
+    def test_model_error_is_fatal_without_exposing_internal_message(self):
+        self.model.fail = True
+        with self.assertLogs("tts-service", level="ERROR") as captured:
+            with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
+                websocket.receive_json()
+                websocket.send_json({"type": "input.text", "text": "私密文本"})
+                self.assertEqual(websocket.receive_json()["type"], "audio.start")
+                error = websocket.receive_json()
+                self.assertEqual((error["type"], error["code"], error["fatal"]),
+                                 ("error", "inference_failed", True))
+                self.assertNotIn("sensitive", error["message"])
+                self.assertNotIn("私密", error["message"])
+                with self.assertRaises(WebSocketDisconnect):
+                    websocket.receive_json()
+        log = "\n".join(captured.output)
+        self.assertIn("error_type=RuntimeError", log)
+        self.assertNotIn("sensitive-internal-model-failure", log)
+        self.assertNotIn("私密文本", log)
+
+    def test_vendor_payload_filter_removes_text_bearing_records(self):
         payload_filter = VendorPayloadFilter()
         sensitive = logging.LogRecord("root", logging.INFO, "", 0,
                                       "synthesis text 客户隐私内容", (), None)
@@ -113,53 +250,6 @@ class TtsServerTest(unittest.TestCase):
                                      "yield speech len 1.0, rtf 2.0", (), None)
         self.assertFalse(payload_filter.filter(sensitive))
         self.assertTrue(payload_filter.filter(ordinary))
-
-    def test_streams_little_endian_pcm_and_passes_instructions(self):
-        response = self.client.post("/v1/audio/speech", headers=self.headers, json=self.payload)
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.headers["x-audio-format"], "pcm_s16le")
-        self.assertEqual(response.headers["x-audio-sample-rate"], "22050")
-        values = np.frombuffer(response.content, dtype="<i2").tolist()
-        self.assertEqual(values, [-32767, 0, 32767, 8192, -8192])
-        self.assertEqual(self.model.calls, [("测试语音", "中文女", "自然播报", True, 1.0)])
-
-    def test_validates_allowlists_lengths_and_extra_fields(self):
-        cases = [
-            ({**self.payload, "model": "wrong"}, 404),
-            ({**self.payload, "voice": "unknown"}, 400),
-            ({**self.payload, "input": "字" * 21}, 400),
-            ({**self.payload, "instructions": "字" * 21}, 400),
-            ({**self.payload, "stream": False}, 422),
-            ({**self.payload, "response_format": "wav"}, 422),
-            ({**self.payload, "unexpected": True}, 422),
-            ({**self.payload, "input": "文本<|endoftext|>"}, 422),
-            ({**self.payload, "instructions": "自然<endofprompt>"}, 422),
-        ]
-        for payload, status in cases:
-            with self.subTest(payload=set(payload), status=status):
-                self.assertEqual(self.client.post("/v1/audio/speech", headers=self.headers,
-                                                  json=payload).status_code, status)
-
-    def test_default_instruction_and_concurrency_limit(self):
-        self.assertTrue(self.engine.acquire())
-        try:
-            self.assertEqual(self.client.post("/v1/audio/speech", headers=self.headers,
-                                              json={**self.payload, "instructions": None}).status_code, 429)
-        finally:
-            self.engine._slots.release()
-        response = self.client.post("/v1/audio/speech", headers=self.headers,
-                                    json={**self.payload, "instructions": None})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(self.model.calls[-1][2], configuration()["default_instruction"])
-
-    def test_closing_a_stream_drains_vendor_state_and_releases_the_slot(self):
-        self.assertTrue(self.engine.acquire())
-        stream = self.engine.stream_locked("测试语音", "中文女", "自然播报")
-        self.assertTrue(next(stream))
-        stream.close()
-        self.assertTrue(self.model.drained.is_set())
-        self.assertTrue(self.engine.acquire())
-        self.engine._slots.release()
 
 
 if __name__ == "__main__":
