@@ -1,31 +1,34 @@
-# CosyVoice-300M-Instruct 流式 TTS
+# Fun-CosyVoice3-0.5B-2512 双向流式 TTS
 
-本服务在 BI-V150 GPU 0 上运行本机已验证的 `CosyVoice-300M-Instruct`。推理由厂商
-CosyVoice v1 PyTorch/TorchScript 代码执行，FastAPI/Uvicorn 提供内部 HTTP 服务，NGINX
-统一暴露 `https://GPU_HOST:8443/tts/...`。它不使用 vLLM，也不开放模型原生管理接口。
+本服务在 BI-V150 GPU 0 上运行 `FunAudioLLM/Fun-CosyVoice3-0.5B-2512`。推理由官方 CosyVoice3
+原生 PyTorch 路径执行，文本 generator 与 PCM 输出同时流动；不启用 vLLM、TensorRT 或 JIT。
+FastAPI/Uvicorn 只监听 `127.0.0.1:8004`，NGINX 通过统一端口公开
+`wss://GPU_HOST:8443/tts/v1/realtime`。
 
 ## 配置与运行边界
 
-[`config/server.json`](config/server.json) 是运行配置的唯一来源：
+[`config/server.json`](config/server.json) 固定以下部署边界：
 
 | 配置 | 当前值 |
 | --- | --- |
-| 模型目录 | `/share/fshare/common/models/CosyVoice/CosyVoice-300M-Instruct` |
-| 厂商源码 | `/root/llm-infer/transformers/audio/CosyVoice-300M-Instruct/CosyVoice` |
-| 对外模型名 | `cosyvoice-300m-instruct` |
-| 设备 / 精度 | GPU 0 / FP16，TorchScript LLM 与 encoder |
+| 模型 | `fun-cosyvoice3-0.5b-2512`，固定 Hugging Face revision |
+| 推理 | GPU 0、FP16、原生 PyTorch `inference_bistream` |
 | 内部监听 | `127.0.0.1:8004` |
-| 输出 | 22050 Hz、单声道、little-endian signed PCM16 |
-| 文本 / 指令上限 | 2000 / 500 个 Unicode 字符 |
-| 并发 | 1 个活跃合成请求 |
+| 输出 | 24000 Hz、单声道、little-endian PCM S16LE |
+| 音色 | 固定 `aishell3-female` |
+| 单文本块 / utterance | 最多 1024 / 4096 个 Unicode 字符 |
+| 超时 | 活跃输入 300 秒；空闲会话 3600 秒 |
+| 并发 | 1 个活跃 WebSocket |
 
-服务锁定当前 CoreX torch/torchaudio、模型元数据及关键厂商源码的 SHA-256。独立 `.venv`
-通过 `--system-site-packages` 复用 CoreX，不安装通用 PyTorch、CUDA、vLLM 或
-`onnxruntime-gpu`。`speech_tokenizer_v1.onnx` 初始化时使用 CPU ONNX Runtime；固定预置音色的
-Instruct 合成主路径在 GPU 执行。
+模型、官方源码、关键文件 SHA-256 和源码 revision 均由启动检查固定。独立 `.venv` 优先加载已固定
+的 CosyVoice 前端依赖，再从 CoreX 加载厂商 torch/torchaudio；不安装通用 PyTorch、CUDA、
+`onnxruntime-gpu`、vLLM 或 TensorRT。语音 tokenizer 的 ONNX 会话明确使用 CPU provider，TTS
+主模型在 GPU 执行。
 
-当前提供检查点中的 7 个预置音色：`中文女`、`中文男`、`粤语女`、`日语男`、`英文女`、
-`英文男`、`韩语女`。不提供参考音频克隆、音色上传、MP3/WAV 编码或流式变速。
+固定参考音色来自 AISHELL-3 的 Apache-2.0 女声 SSB0005。来源 revision、原始文件哈希、裁剪点、
+文本和派生 24 kHz WAV 哈希记录在
+[`assets/voices/aishell3-female.json`](assets/voices/aishell3-female.json)。客户端不能上传参考音频、
+选择其他音色或调整速度。
 
 ## 准备与管理
 
@@ -38,9 +41,10 @@ python3 gateway/service.py status --service tts
 python3 gateway/service.py reload --service gateway
 ```
 
-`ready: true` 表示模型和必要组件已加载并开始监听。内部 key 位于忽略提交的
-`tts_service/runtime/api_key`，仅供网关注入；CPU 后端仍使用统一的
-`gateway/runtime/api_key`。不要向 CPU 项目复制 TTS 内部 key。
+bootstrap 会建立虚拟环境、检出固定 revision 的官方 CosyVoice 源码、应用 CoreX CPU ONNX patch、
+下载并校验模型、生成固定参考 WAV，再初始化内部 key。`ready: true` 表示模型和必要组件已加载并
+开始监听。内部 key 位于 `tts_service/runtime/api_key`，只供网关和本机监控使用；CPU 后端使用
+`gateway/runtime/api_key` 中的统一公开 key。
 
 停止和重新加载模型：
 
@@ -49,62 +53,40 @@ python3 gateway/service.py stop --service tts
 python3 gateway/service.py start --service tts
 ```
 
-开发后台模式没有自动恢复。生产主机可使用现有 `gpu-algorithm@tts.service` systemd 模板，
-按安装目录和运行用户调整。运行日志、PID 和创建时间由网关管理器保存在 `gateway/runtime/`。
+开发后台模式没有自动恢复。生产主机可使用现有 `gpu-algorithm@tts.service` systemd 模板，并按
+实际安装目录和运行用户调整。
 
 ## 对外接口
 
-所有路径要求 `Authorization: Bearer <GPU_API_KEY>`。
+唯一公开 TTS 业务接口是 `WSS /tts/v1/realtime`，握手要求
+`Authorization: Bearer <GPU_API_KEY>`。连接成功后：
 
-| 方法 | 路径 | 用途 |
-| --- | --- | --- |
-| POST | `/tts/v1/audio/speech` | 流式生成原始 PCM |
-| GET | `/tts/v1/audio/voices` | 列出允许使用的预置音色 |
-| GET | `/tts/health/ready` | TTS 就绪状态 |
+1. 服务端发送 `session.created`，声明模型、固定音色和 PCM 参数。
+2. 客户端连续发送一个或多个 `input.text`。
+3. 服务端发送 `audio.start`，并可在客户端发送 `input.done` 前持续发送二进制 PCM。
+4. 客户端发送 `input.done`；服务端完成后发送 `audio.done`。
+5. 收到 `audio.done` 后，同一 WebSocket 可开始下一条 utterance；空闲时发送 `session.close`。
 
-内部 `/metrics` 发布 `tts_time_to_first_token_seconds` 直方图。每个 HTTP 合成请求只记录首次
-语音 token，从语音 token 解码器开始工作到第一次产出；它不等于首段 PCM 到达时间。
-该路径要求 TTS 内部 key，统一网关不直接公开，仅由本机监控服务采集。
+完整帧格式、状态、限制与错误码见
+[`../contracts/tts-websocket.md`](../contracts/tts-websocket.md)。旧的公开语音 HTTP、音色列表和 TTS
+健康路径已移除；TTS 的 `/health` 与 `/metrics` 仍作为 loopback 内部接口保留，并要求内部 key。
 
-合成请求：
-
-```json
-{
-  "model": "cosyvoice-300m-instruct",
-  "input": "欢迎使用语音服务。",
-  "voice": "中文女",
-  "instructions": "用自然、亲切的语气播报。",
-  "response_format": "pcm",
-  "stream": true,
-  "speed": 1.0
-}
-```
-
-`model`、`input`、`voice` 必填。`instructions` 省略、`null` 或空白时使用中性播报指令；
-输入与指令不得含模型分词器控制序列。其余三个字段可省略，但当前只接受示例中的固定值。
-
-成功响应为 `audio/pcm` 的连续字节流，并通过 `X-Audio-Format: pcm_s16le`、
-`X-Audio-Sample-Rate: 22050`、`X-Audio-Channels: 1` 描述格式。响应没有 `Content-Length`；
-HTTP chunk 边界只是传输边界，不能当作音频帧边界。NGINX 已关闭该路径的响应缓冲和缓存。
-
-模型或音色错误返回 400/404，结构校验返回 422，请求体超过 16 KiB 返回 413，并发占满返回
-429，上游不可用通常返回 502。音频头已经发送后发生的推理错误会表现为 PCM 流提前结束，
-CPU 业务不能仅凭 HTTP 200 判断音频完整。CosyVoice v1 没有单次生成的计算取消接口；客户端
-断开后服务会把生成器执行完并清理缓存，在此之前新的请求仍会得到 429。
-
-完整字段和响应见 [`../contracts/openapi.yaml`](../contracts/openapi.yaml)。本服务的流式输出表示
-首段可在整段完成前发送，并不承诺低延迟实时播放；当前机器的三个短文本样本首段约为
-9.0–29.7 秒。
+内部 `/metrics` 发布 `tts_time_to_first_token_seconds`。每个 utterance 最多记录一次，从
+`inference_bistream` 开始消费首批规范化文本 token，到首个语音 token 在 GPU 服务进程可见。
+它不含等待客户端文本、PCM 解码和网络时间，也不等于客户端收到首段音频的延迟。
 
 ## CPU 客户端与验证
 
-[`cpu_client/`](cpu_client/README.md) 可独立复制到 CPU Web 后端，只依赖 HTTPX。示例把分块 PCM
-安全地封装成 WAV；在线业务也可以按返回头把 PCM 逐块转发给播放器。
+[`cpu_client/`](cpu_client/README.md) 可独立复制到 CPU Web 后端，只依赖 `websockets==15.0.1`。
+客户端复用一条 WSS 会话，在后台消费 LLM 文本迭代器并同时向调用方产生 PCM。
 
 ```bash
-tts_service/.venv/bin/python -m unittest discover -s tts_service/tests -p 'test_*.py' -v
+TTS_VENV_SITE="$PWD/tts_service/.venv/lib/python3.10/site-packages"
+PYTHONPATH="$TTS_VENV_SITE:/usr/local/corex/lib64/python3/dist-packages" \
+  tts_service/.venv/bin/python -m unittest discover -s tts_service/tests -p 'test_*.py' -v
 source yolov5v70-service/scripts/corex_env.sh
-python -m unittest discover -s gateway/tests -p test_gateway.py -v
+python -m unittest discover -s gateway/tests -p 'test_*.py' -v
 ```
 
-真实模型和统一入口验收记录见 [`docs/validation.md`](docs/validation.md)。
+真实 CoreX 模型、严格双流、统一入口和显存验收记录见
+[`docs/validation.md`](docs/validation.md)。

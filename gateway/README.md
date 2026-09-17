@@ -1,6 +1,7 @@
 # 统一算法入口
 
-NGINX 在同一 TLS 端口承载 HTTP/1.1 和 HTTP/2：VLM 通过 HTTP/SSE，RAG 与监控通过 HTTP JSON，ASR 通过 WebSocket，TTS 通过 HTTP PCM 流，YOLO 通过原生 gRPC 双向流。
+NGINX 在同一 TLS 端口承载 HTTP/1.1 和 HTTP/2：VLM 通过 HTTP/SSE，RAG 与监控通过 HTTP
+JSON，ASR 与 TTS 通过 WebSocket，YOLO 通过原生 gRPC 双向流。
 默认监听所有网卡的 `8443`，不设置调用方 IP、域名或 Origin 白名单。所有公开路径，包括状态接口，
 都校验 `Authorization: Bearer <GPU_API_KEY>`。网络平台或防火墙仍需放行这个端口。
 
@@ -70,7 +71,8 @@ YOLO 使用上述验收权重。换业务模型需更新网关配置中 `yolo.we
 并通过 YOLO 环境变量配置匹配的类别文件等参数，重新做检测验收。
 RAG 的模型配置见 `rag_service/config/server.json`，BGE-M3 在 GPU 0 以 FP16 与 YOLO 共存。
 ASR 配置见 `asr_service/config/server.json`，Fun-ASR-Nano 在 GPU 0 使用 BF16 和 vLLM 解码。
-TTS 配置见 `tts_service/config/server.json`，CosyVoice-300M-Instruct 在 GPU 0 使用 FP16 TorchScript。
+TTS 配置见 `tts_service/config/server.json`，Fun-CosyVoice3-0.5B-2512 在 GPU 0 使用原生
+PyTorch FP16 双向流，固定 AISHELL-3 女声音色。
 VLM/RAG/ASR/TTS 的监听配置须与网关各自的上游地址一致；算法内部端口仅监听 loopback。
 删除网关配置中的 `rag` 段可不管理或转发 RAG；这不会主动停止已运行的 RAG，应先单独停止它。
 
@@ -97,7 +99,9 @@ python3 gateway/service.py stop
 `reload` 只重载网关：先验证候选配置，通过后原子替换配置并发送 HUP。失败时保留原配置，
 不会重启算法进程。重载返回后仍需验证新路由；旧 worker 的最长退出等待为 10 秒。
 `managed` 表示本控制程序拥有该后台进程，`ready` 表示相应接口检查通过，两者分别报告。
-`/health/live` 只表示网关存活；算法就绪分别查询各自的 `/vlm/health/ready`、`/yolo/health/ready`、`/rag/health/ready`、`/asr/health/ready` 和 `/tts/health/ready`。
+`/health/live` 只表示网关存活；公开的算法就绪路径包括 `/vlm/health/ready`、
+`/yolo/health/ready`、`/rag/health/ready` 和 `/asr/health/ready`。TTS 状态由本机监控服务通过
+内部 `/health` 采集，不再公开独立的 TTS 健康路径。
 本地管理器用 PID 创建时间及项目归属校验进程，停止操作只作用于本次启动的进程组。
 使用该管理器启动后，也用它停止；不要混用算法目录的后台启动脚本或生产 systemd。
 
@@ -114,8 +118,9 @@ python3 gateway/service.py stop
 - RAG 只公开 dense embedding；`/rag/v1/rerank` 保持 404。RAG 拥有独立上游 key 和并发额度。
 - `/asr/v1/realtime` 使用 WebSocket Upgrade 转发到 ASR `/realtime`；`/asr/health/ready` 映射到 `/health`。
 - ASR 路由关闭代理缓冲，空闲读取超时 3600 秒，最多 4 个活跃长连接；不公开文件转写路径。
-- `/tts/v1/audio/speech` 映射到 TTS 同名路径，关闭响应缓冲并保留 PCM 分块；`/tts/v1/audio/voices` 列出预置音色。
-- TTS 请求体上限 16 KiB、最多 1 个活跃请求、上游空闲读取超时 600 秒；不公开 docs、metrics 或音色克隆路径。
+- `/tts/v1/realtime` 使用 WebSocket Upgrade 转发到 TTS `/realtime`，并用 TTS 内部 key 覆盖公开 key。
+- TTS 路由关闭代理缓冲，单消息上限由服务执行，最多 1 个活跃长连接，上游读写空闲超时
+  3600 秒；不公开 TTS 健康、metrics、模型管理或音色管理路径。
 - `/monitor/v1/overview` 返回每 5 秒更新的快照；`refresh=true` 等待立即采样，入口最多 8 个并发请求。内部算法 metrics 路径仍不公开。
 - `/detector.v1.Detector/Detect` 保留 gRPC 消息、状态尾部、帧级错误和双向流。
 - 其余算法路径返回 404，管理和 metrics 接口不被通配转发。

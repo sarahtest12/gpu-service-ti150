@@ -1,13 +1,14 @@
 openapi: 3.1.1
 info:
   title: BI-V150 算法服务接口契约
-  version: 0.6.0
+  version: 0.7.0
   description: |
     CPU Web 后端访问 GPU 主机的统一 HTTP/WebSocket 契约。所有路径共用 TLS 端口和 GPU_API_KEY。
     x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
     x-implementation-status=proposed 表示待实现的设计。本文件不把未部署算法视为可用。
     YOLO 原生 gRPC 双向流由 x-grpc 指向的 detector.proto 定义；不转换为 JSON POST 接口。
-    ASR 的 WebSocket 握手在 paths 中定义，双向消息语义由 x-websocket 指向的文档定义。
+    ASR 与 TTS 的 WebSocket 握手在 paths 中定义；OpenAPI 不表达双向帧状态机，消息语义由
+    各操作指向的独立 WebSocket 契约定义。
     VLM 数据结构从本机锁定版本的 vLLM 协议模型导出。上游 schema 中出现的音频、视频等字段
     不代表本部署支持这些能力；本项目支持文本、图片、业务工具及其 SSE 输出，部署限制见操作描述。
 servers:
@@ -31,7 +32,7 @@ tags:
   - name: ASR
     description: 已实现的 Fun-ASR-Nano-2512 实时 WebSocket 语音识别。
   - name: TTS
-    description: 已实现的 CosyVoice-300M-Instruct 流式语音合成。
+    description: 已实现的 Fun-CosyVoice3-0.5B-2512 双向流式语音合成。
   - name: Monitor
     description: 已实现的算法状态、显存和最近 60 秒耗时快照。
 x-grpc:
@@ -54,7 +55,7 @@ x-reserved-interfaces:
   - {method: POST, path: /rag/v1/rerank, status: reserved, current_http_status: 404}
 x-source:
   repository_base_commit: c023e63
-  working_tree_change: CosyVoice TTS deployment and five-service monitoring implementation
+  working_tree_change: CosyVoice3 bi-streaming TTS and five-service monitoring implementation
   gateway: ../gateway/configuration.py
   server_configuration: ../gateway/config/server.json
   rag_configuration: ../rag_service/config/server.json
@@ -425,103 +426,30 @@ paths:
         '502': {$ref: '#/components/responses/BadGateway'}
         '504': {$ref: '#/components/responses/GatewayTimeout'}
         default: {$ref: '#/components/responses/UpstreamError'}
-  /tts/health/ready:
+  /tts/v1/realtime:
     get:
-      operationId: getTtsReadiness
-      tags: [Health, TTS]
-      summary: CosyVoice TTS 是否就绪
-      x-implementation-status: implemented
-      description: 模型、TorchScript 与必要的前端组件全部加载并开始监听后返回成功。
-      responses:
-        '200':
-          description: TTS 模型就绪。
-          headers:
-            X-Request-ID: {$ref: '#/components/headers/RequestId'}
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/GatewayLiveness'}
-              example: {status: ok}
-        '401': {$ref: '#/components/responses/Unauthorized'}
-        '502': {$ref: '#/components/responses/BadGateway'}
-        '504': {$ref: '#/components/responses/GatewayTimeout'}
-  /tts/v1/audio/voices:
-    get:
-      operationId: listTtsVoices
+      operationId: openTtsRealtimeSession
       tags: [TTS]
-      summary: 获取允许使用的预置音色
+      summary: 建立 CosyVoice3 双向流式语音合成会话
       x-implementation-status: implemented
-      responses:
-        '200':
-          description: 当前检查点中的 7 个预置音色。
-          headers:
-            X-Request-ID: {$ref: '#/components/headers/RequestId'}
-          content:
-            application/json:
-              schema: {$ref: '#/components/schemas/TtsVoiceList'}
-              example:
-                object: list
-                data:
-                  - {id: 中文女, object: voice, language: Chinese}
-                  - {id: 中文男, object: voice, language: Chinese}
-        '401': {$ref: '#/components/responses/Unauthorized'}
-        '502': {$ref: '#/components/responses/BadGateway'}
-        '504': {$ref: '#/components/responses/GatewayTimeout'}
-  /tts/v1/audio/speech:
-    post:
-      operationId: createTtsSpeech
-      tags: [TTS]
-      summary: 使用 CosyVoice 指令音色流式合成 PCM 音频
-      x-implementation-status: implemented
-      x-request-body-limit-bytes: 16384
-      x-max-active-requests: 1
-      x-upstream-idle-timeout-seconds: 600
+      x-websocket-contract: ./tts-websocket.md
+      x-max-active-connections: 1
+      x-max-message-bytes: 16384
+      x-session-idle-timeout-seconds: 3600
       description: |
-        请求一次提交完整文本，响应以 HTTP chunked 流持续返回 22050 Hz、单声道、
-        little-endian signed PCM16。客户端不得把 HTTP 分块边界当作音频帧边界；按连续 PCM
-        字节流播放或保存。成功响应通过 X-Audio-* 头明确编码参数，且不会提供 Content-Length。
-
-        当前仅支持模型 cosyvoice-300m-instruct、预置音色和模型级 stream=true；不支持参考音频
-        克隆、WAV/MP3 编码、非流式响应或流式变速。instructions 省略或为空时使用服务端的中性播报
-        指令。input 最多 2000 个 Unicode 字符，instructions 最多 500 个字符。网关和模型服务均
-        只允许 1 个活跃合成请求；超过限制返回 429。客户端取消后 CosyVoice v1 没有计算取消接口，
-        服务会在后台完成并清理该次生成，然后才接收下一次请求。
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: {$ref: '#/components/schemas/TtsSpeechRequest'}
-            example:
-              model: cosyvoice-300m-instruct
-              input: 欢迎使用语音服务。
-              voice: 中文女
-              instructions: 用自然、亲切的语气播报。
-              response_format: pcm
-              stream: true
-              speed: 1.0
+        使用 WebSocket Upgrade 建立长连接。握手携带统一 Authorization Bearer key；网关将其
+        替换为 TTS 内部 key。连接固定使用 fun-cosyvoice3-0.5b-2512、aishell3-female 和
+        24000 Hz 单声道 PCM S16LE。客户端可持续发送 input.text，服务端可在 input.done 前返回
+        二进制 PCM；同一连接在 audio.done 后可顺序处理下一条 utterance。完整消息、状态、限制
+        和错误语义见 x-websocket-contract。OpenAPI 客户端生成器通常不能生成该双向消息协议。
       responses:
-        '200':
-          description: 连续 PCM S16LE 字节流；HTTP 分块仅用于传输。
+        '101':
+          description: WebSocket 协议升级成功；后续帧遵循独立消息契约。
           headers:
             X-Request-ID: {$ref: '#/components/headers/RequestId'}
-            Cache-Control:
-              schema: {type: string, const: no-store}
-            X-Audio-Format:
-              schema: {type: string, const: pcm_s16le}
-            X-Audio-Sample-Rate:
-              schema: {type: string, const: '22050'}
-            X-Audio-Channels:
-              schema: {type: string, const: '1'}
-          content:
-            audio/pcm:
-              schema: {type: string, format: binary}
-        '400': {$ref: '#/components/responses/TtsApplicationError'}
         '401': {$ref: '#/components/responses/Unauthorized'}
         '403': {$ref: '#/components/responses/Forbidden'}
-        '404': {$ref: '#/components/responses/TtsApplicationError'}
-        '413': {$ref: '#/components/responses/PayloadTooLarge'}
-        '422': {$ref: '#/components/responses/TtsApplicationError'}
         '429': {$ref: '#/components/responses/TooManyRequests'}
-        '500': {$ref: '#/components/responses/TtsApplicationError'}
         '502': {$ref: '#/components/responses/BadGateway'}
         '504': {$ref: '#/components/responses/GatewayTimeout'}
   /monitor/v1/overview:
@@ -547,9 +475,9 @@ paths:
         RAG 统计单次 HTTP 请求在 GPU 主机服务端的完整处理耗时，包含内部排队与处理。
         ASR 按每次 partial/final 解码轮次统计首文本 token 延迟：从已准备好的音频上下文提交给
         GPU 解码器，到首个文本 token 在 GPU 主机服务进程可见；不包含音频累计、VAD 等待和网络。
-        TTS 每个 HTTP 请求统计一次首语音 token 延迟：从文本提交给 GPU 语音 token 解码器，
-        到首个语音 token 在 GPU 主机服务进程可见；不包含文本规范化、声学解码、声码器和网络，
-        因此不等同于首段可播放音频。
+        TTS 每个 utterance 统计一次首语音 token 延迟：从首批规范化文本 token 提交给 GPU 的
+        inference_bistream 开始，到首个语音 token 在 GPU 主机服务进程可见；不包含等待客户端
+        追加文本、文本队列等待、PCM 解码、网络和播放器缓冲，因此不等同于首段可播放音频。
         avg_ms/p95_ms 均为毫秒，P95 是直方图估算；无样本或不可采集时为 null。
         启动不足 60 秒使用已有样本；累计计数器重启或采样间隔超过 12.5 秒时重新建立基线。
         快照超过 15 秒、首次采样失败或强制刷新失败时返回 503，不以旧数据冒充当前状态。
@@ -689,7 +617,7 @@ components:
         text/html:
           schema: {type: string}
     GatewayTimeout:
-      description: 上游等待超时，尚未开始响应时由 NGINX 返回 HTML；已开始的 SSE 或 PCM 响应可能直接断流。
+      description: 上游等待超时，尚未开始响应时由 NGINX 返回 HTML；已开始的流式响应可能直接断开。
       headers:
         X-Request-ID: {$ref: '#/components/headers/RequestId'}
       content:
@@ -707,17 +635,6 @@ components:
           schema: {$ref: '#/components/schemas/Vlm_ErrorResponse'}
         text/plain:
           schema: {type: string}
-    TtsApplicationError:
-      description: TTS 请求校验、模型选择或服务执行失败；响应在音频头发送前才可能是 JSON。
-      headers:
-        X-Request-ID: {$ref: '#/components/headers/RequestId'}
-      content:
-        application/json:
-          schema:
-            type: object
-            required: [detail]
-            properties:
-              detail: {}
   schemas:
     GatewayLiveness:
       type: object
@@ -731,46 +648,6 @@ components:
       required: [status]
       properties:
         status: {type: string, enum: [ok, unavailable]}
-    TtsSpeechRequest:
-      type: object
-      additionalProperties: false
-      required: [model, input, voice]
-      properties:
-        model: {type: string, const: cosyvoice-300m-instruct}
-        input:
-          type: string
-          minLength: 1
-          maxLength: 2000
-          pattern: '^(?!.*(?:<\||<endofprompt>))[\s\S]*$'
-        voice:
-          type: string
-          enum: [中文女, 中文男, 粤语女, 日语男, 英文女, 英文男, 韩语女]
-        instructions:
-          type: [string, 'null']
-          maxLength: 500
-          pattern: '^(?!.*(?:<\||<endofprompt>))[\s\S]*$'
-          description: 省略、null 或空白时使用服务端中性播报指令；不得包含分词器控制序列。
-        response_format: {type: string, const: pcm, default: pcm}
-        stream: {type: boolean, const: true, default: true}
-        speed: {type: number, const: 1.0, default: 1.0}
-    TtsVoiceList:
-      type: object
-      additionalProperties: false
-      required: [object, data]
-      properties:
-        object: {type: string, const: list}
-        data:
-          type: array
-          minItems: 1
-          items: {$ref: '#/components/schemas/TtsVoice'}
-    TtsVoice:
-      type: object
-      additionalProperties: false
-      required: [id, object, language]
-      properties:
-        id: {type: string, enum: [中文女, 中文男, 粤语女, 日语男, 英文女, 英文男, 韩语女]}
-        object: {type: string, const: voice}
-        language: {type: string, enum: [Chinese, Cantonese, Japanese, English, Korean]}
     MonitoringOverview:
       type: object
       additionalProperties: false

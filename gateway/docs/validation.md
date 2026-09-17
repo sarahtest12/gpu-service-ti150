@@ -149,3 +149,11 @@ YOLO 独立虚拟环境已建立，官方 v7.0 权重下载后通过仓库指定
 未安装或启用 systemd 单元；提供的是需要按实际部署路径、用户调整的模板。
 RAG rerank 与 YOLO HTTP 单图路由尚未实现，当前不会伪装成可用服务。
 ASR 仅部署实时 WebSocket，不提供完整文件转写路由。
+
+## Fun-CosyVoice3 双向流式路由验收
+
+2026-09-17 网关将 TTS 公共入口替换为 `WSS /tts/v1/realtime`。真实 NGINX/TLS 测试桩验证了
+WebSocket Upgrade、统一公开 key 替换为 TTS 内部 key、二进制 PCM 不缓冲、单连接 429 限制、
+TTS 长连接不阻塞 VLM，以及已移除的 TTS 公共路径返回 404。网关全量协议测试 15 项通过，
+4 项需要运行中模型的验收按环境开关跳过。真实模型和切换结果见
+[`../../tts_service/docs/validation.md`](../../tts_service/docs/validation.md)。

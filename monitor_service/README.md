@@ -5,8 +5,10 @@
 未部署服务不返回，异常服务只返回名称与状态。
 
 耗时来自算法进程自身的 Prometheus 直方图。YOLO 使用每帧模型推理时间，VLM 使用首 token，
-RAG 使用 vLLM 端到端请求时间，ASR 使用每轮 vLLM 解码首文本 token，TTS 使用每个 HTTP 请求
-首次语音 token。显存通过 `ixsmi` 获取，并沿 `/proc` 父进程关系归属到网关管理的服务进程组。
+RAG 使用 vLLM 端到端请求时间，ASR 使用每轮 vLLM 解码首文本 token，TTS 使用每个 utterance
+的首次语音 token。TTS 起点为 `inference_bistream` 开始消费首批规范化文本 token，终点为首个
+语音 token 在 GPU 服务进程可见；不包含等待后续文本、PCM 解码和网络。显存通过 `ixsmi` 获取，
+并沿 `/proc` 父进程关系归属到网关管理的服务进程组。
 `ixsmi` 的 MiB 会换算为十进制 MB。
 
 ```bash

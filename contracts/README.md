@@ -1,7 +1,7 @@
 # 算法服务契约
 
 初始 VLM/YOLO 契约基线为 `88bb84a`（add gateway）。随后已部署 BGE-M3、Fun-ASR-Nano-2512
-和 CosyVoice-300M-Instruct。
+和 Fun-CosyVoice3-0.5B-2512。
 五路算法的监控快照已经实现；重排序模型暂不部署。
 
 优先 review [`openapi.yaml`](openapi.yaml)。它是可导入 OpenAPI 工具的 **3.1.1** 单文件，
@@ -10,6 +10,7 @@
 YOLO 的原生双向流使用 [现有 detector.proto](../yolov5v70-service/shared/detector_contract/detector.proto)，
 输入、输出、限制与错误语义另见 [`yolo-grpc.md`](yolo-grpc.md)。
 ASR 的握手和健康检查在 OpenAPI 中，双向消息语义见 [`asr-websocket.md`](asr-websocket.md)。
+TTS 的握手在 OpenAPI 中，文本、PCM 与状态机见 [`tts-websocket.md`](tts-websocket.md)。
 
 ## 对外接口清单
 
@@ -28,9 +29,7 @@ ASR 的握手和健康检查在 OpenAPI 中，双向消息语义见 [`asr-websoc
 | HTTP POST | `/rag/v1/rerank` | 检索重排 | 预留路径，当前 404 |
 | WebSocket | `/asr/v1/realtime` | Fun-ASR-Nano 实时语音识别 | 已实现；消息契约单列 |
 | HTTP GET | `/asr/health/ready` | ASR 引擎就绪 | 已实现 |
-| HTTP GET | `/tts/health/ready` | TTS 模型就绪 | 已实现 |
-| HTTP GET | `/tts/v1/audio/voices` | TTS 预置音色列表 | 已实现 |
-| HTTP POST | `/tts/v1/audio/speech` | CosyVoice 流式 PCM 合成 | 已实现 |
+| WebSocket | `/tts/v1/realtime` | CosyVoice3 文本输入与 PCM 输出双向流 | 已实现；消息契约单列 |
 
 RAG rerank 记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
 YOLO 普通 HTTP 单图接口也尚未定义。监控的 RAG 耗时只覆盖现有 embedding 请求，不代表 rerank 已部署。
@@ -65,9 +64,9 @@ YOLO 口径为 GPU 主机端每帧模型推理耗时，排除预处理、排队�
 VLM 为 GPU 端首 token 延迟，包含排队，排除 CPU 与 GPU 间网络。
 RAG 为 HTTP 请求在 GPU 主机应用中的完整处理耗时，不等同于单个 GPU kernel 的执行时间。
 ASR 以每次 partial/final 解码轮次为样本，从音频上下文提交给 GPU 解码器计时，到首个文本 token
-在 GPU 主机服务进程可见；排除音频累计、VAD 等待和网络。TTS 每个 HTTP 请求只记录一次，从文本提交给 GPU 语音 token
-解码器计时，到首个语音 token 在 GPU 主机服务进程可见；排除文本规范化、声学解码、声码器和网络，
-所以它不等于用户能够播放首段音频的时间。
+在 GPU 主机服务进程可见；排除音频累计、VAD 等待和网络。TTS 每个 utterance 只记录一次，
+从 `inference_bistream` 开始消费首批规范化文本 token，到首个语音 token 在 GPU 主机服务进程
+可见；排除等待客户端文本、文本队列、PCM 解码、网络和播放器缓冲，所以它不等于用户听到声音的时间。
 
 GPU 监控接口保持单次快照 GET。CPU Web 后端使用一个后台任务每 5 秒以普通请求拉取，并通过
 自己的长连接广播，避免每个浏览器分别访问 GPU。手动刷新时，CPU 后端请求
@@ -131,13 +130,13 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 
 ## TTS 契约说明
 
-TTS 请求一次提交完整文本，响应以 HTTP chunked 传输连续的 PCM S16LE 字节流。音频固定为
-22050 Hz、单声道；HTTP 分块大小没有业务语义。只支持 `cosyvoice-300m-instruct`、7 个预置
-音色、`stream=true`、`speed=1.0` 和 `response_format=pcm`。不提供参考音频克隆或编码格式转换。
+TTS 使用 `WSS /tts/v1/realtime`。客户端可持续发送多个 `input.text`，服务端可在
+`input.done` 前返回二进制 PCM；`audio.done` 表示单个 utterance 完整结束，同一连接可顺序复用。
+模型固定为 `fun-cosyvoice3-0.5b-2512`，音色固定为 `aishell3-female`，输出固定为 24000 Hz
+单声道 PCM S16LE。完整消息、状态、错误和限制见 [`tts-websocket.md`](tts-websocket.md)。
 
-服务与网关各限制 1 个活跃请求。客户端取消后，CosyVoice v1 会在服务端完成该生成器并清理缓存，
-期间新请求仍可能返回 429。HTTP 200 后的推理异常会表现为 PCM 提前断流；需要由 CPU 业务结合
-预期播放流程处理。部署与真实样本见 [`../tts_service/README.md`](../tts_service/README.md) 和
+服务与网关各限制 1 个活跃 WebSocket。客户端断开后服务端取消文本输入并清理厂商生成器；清理
+完成前新握手仍可能返回 429。部署与真实样本见 [`../tts_service/README.md`](../tts_service/README.md) 和
 [`../tts_service/docs/validation.md`](../tts_service/docs/validation.md)。
 
 ## 内部接口范围
@@ -160,7 +159,7 @@ TTS 请求一次提交完整文本，响应以 HTTP chunked 传输连续的 PCM 
 | `127.0.0.1:8003` | `/realtime` | 实时 ASR WebSocket，使用 ASR 内部 key |
 | `127.0.0.1:8003` | `/metrics` | ASR 首 token 直方图，使用 ASR 内部 key；不公开 |
 | `127.0.0.1:8004` | `/health` | TTS JSON 健康检查，使用 TTS 内部 key |
-| `127.0.0.1:8004` | `/v1/audio/voices`、`/v1/audio/speech` | TTS 内部 HTTP，使用 TTS 内部 key |
+| `127.0.0.1:8004` | `/realtime` | TTS 双向流式 WebSocket，使用 TTS 内部 key |
 | `127.0.0.1:8004` | `/metrics` | TTS 首 token 直方图，使用 TTS 内部 key；不公开 |
 | `127.0.0.1:8005` | `/health`、`/v1/overview` | 监控内部 HTTP，使用监控内部 key |
 

@@ -116,3 +116,19 @@ ASR 从 vLLM `RequestOutput.metrics.first_token_latency` 取每轮解码首 toke
 同一份真实快照中五个算法均为 `running` 并返回十进制 MB。该 60 秒窗口的样例值为：YOLO
 8.735/9.875 ms、VLM 183.675/242.5 ms、RAG 46.031/285.0 ms、ASR 53.791/78.0 ms、
 TTS 7478.046/9984.0 ms（依次为 avg/P95）。这些数值只验证采集链路和字段口径，不作为性能承诺。
+
+## Fun-CosyVoice3 双向流式 TTS 契约
+
+2026-09-17 将 TTS 公共契约替换为 `WSS /tts/v1/realtime`，契约版本升为 `0.7.0`。旧的三个
+TTS 公共 HTTP 操作从 OpenAPI 和网关中删除；内部 `/health` 与 `/metrics` 继续只供本机监控使用。
+双向 JSON、二进制 PCM、状态、错误和限制由 [`tts-websocket.md`](tts-websocket.md) 定义。
+
+| 校验 | 结果 |
+| --- | --- |
+| OpenAPI 只暴露一个 TTS WebSocket 握手路径 | 通过 |
+| 固定模型、音色、24 kHz PCM 和 utterance 级 TTFT 跨文档一致 | 通过 |
+| TTS 引擎、WebSocket 服务、配置和 CPU 客户端 | 24 项通过 |
+| 真实 NGINX/TLS WebSocket、公开 key 替换与单连接限制 | 通过 |
+| 已移除 TTS 公共路径 | 使用正确公开 key 均返回 404 |
+
+前面的 CosyVoice v1 HTTP 章节保留为 2026-09-11 的历史验收记录，不再描述当前公共接口。

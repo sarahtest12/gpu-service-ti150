@@ -36,7 +36,7 @@ class LiveGatewayTest(unittest.TestCase):
         with httpx.Client(verify=ssl.create_default_context(cafile=str(self.ca_file)), trust_env=False) as client:
             for path in ("/vlm/v1/models", "/rag/v1/models", "/health/live",
                          "/vlm/health/ready", "/yolo/health/ready",
-                         "/rag/health/ready", "/asr/health/ready", "/tts/health/ready",
+                         "/rag/health/ready", "/asr/health/ready",
                          "/monitor/v1/overview"):
                 self.assertEqual(client.get(self.base + path).status_code, 401)
                 response = client.get(self.base + path, headers={"Authorization": "Bearer " + self.key})
