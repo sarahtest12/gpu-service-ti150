@@ -1,3 +1,2 @@
-# CPU-only HTTP client; no torch or accelerator SDK is required.
-httpx==0.28.1
-
+# CPU-only WebSocket client; no torch or accelerator SDK is required.
+websockets==15.0.1

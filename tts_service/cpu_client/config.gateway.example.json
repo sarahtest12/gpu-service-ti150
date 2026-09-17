@@ -1,9 +1,5 @@
 {
-  "base_url": "https://GPU_HOST:8443/tts/v1",
+  "base_url": "https://GPU_HOST:8443/tts",
   "ca_file": "server.crt",
-  "model": "cosyvoice-300m-instruct",
-  "voice": "中文女",
-  "instructions": "用自然、清晰、中性的语气播报。",
-  "timeout_seconds": 600
+  "timeout_seconds": 3600
 }
-
