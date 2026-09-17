@@ -1,10 +1,12 @@
 """Filesystem-only tests for pinned CosyVoice3 service configuration."""
 
+import base64
 import hashlib
 import json
 import math
 from pathlib import Path
 import struct
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -29,6 +31,7 @@ class ServiceConfigurationTest(unittest.TestCase):
         root = Path(self.directory.name)
         self.model = root / "model"
         self.source = root / "source"
+        self.source_patch = root / "source.patch"
         self.prompt = root / "voice.wav"
         self.manifest = root / "voice.json"
         self.base_packages = root / "base-packages.json"
@@ -53,6 +56,7 @@ class ServiceConfigurationTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(("source:" + name).encode())
         (self.source / "third_party/Matcha-TTS/matcha").mkdir(parents=True)
+        self.source_patch.write_text("pinned patch\n")
         sample_rate = 24000
         samples = []
         for index in range(sample_rate * 6):
@@ -124,6 +128,10 @@ class ServiceConfigurationTest(unittest.TestCase):
             },
             "source": str(self.source),
             "source_revision": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
+            "source_patch": str(self.source_patch),
+            "source_patch_sha256": digest(self.source_patch),
+            "source_tree_diff_sha256": "a" * 64,
+            "source_submodules": {},
             "base_packages": str(self.base_packages),
             "source_checksums": {
                 name: digest(self.source / name)
@@ -212,12 +220,14 @@ class ServiceConfigurationTest(unittest.TestCase):
     def test_resolves_service_paths_relative_to_the_config_file(self):
         root = self.path.parent
         self.cfg["source"] = str(self.source.relative_to(root))
+        self.cfg["source_patch"] = str(self.source_patch.relative_to(root))
         self.cfg["voice_manifest"] = str(self.manifest.relative_to(root))
         self.cfg["prompt_wav"] = str(self.prompt.relative_to(root))
         self.cfg["base_packages"] = str(self.base_packages.relative_to(root))
         self.write_config()
         cfg = self.load()
         self.assertEqual(cfg["source"], str(self.source.resolve()))
+        self.assertEqual(cfg["source_patch"], str(self.source_patch.resolve()))
         self.assertEqual(cfg["voice_manifest"], str(self.manifest.resolve()))
         self.assertEqual(cfg["prompt_wav"], str(self.prompt.resolve()))
         self.assertEqual(cfg["base_packages"], str(self.base_packages.resolve()))
@@ -236,8 +246,12 @@ class ServiceConfigurationTest(unittest.TestCase):
         (dist_info / "METADATA").write_text(
             "Metadata-Version: 2.1\nName: example-pkg\nVersion: 1.2.3\n"
         )
+        metadata_digest = base64.urlsafe_b64encode(
+            hashlib.sha256((dist_info / "METADATA").read_bytes()).digest(),
+        ).rstrip(b"=").decode()
         (dist_info / "RECORD").write_text(
-            "example_pkg-1.2.3.dist-info/METADATA,,\n"
+            f"example_pkg-1.2.3.dist-info/METADATA,sha256={metadata_digest},"
+            f"{(dist_info / 'METADATA').stat().st_size}\n"
             "example_pkg-1.2.3.dist-info/RECORD,,\n"
         )
         self.base_packages.write_text(json.dumps({
@@ -254,6 +268,13 @@ class ServiceConfigurationTest(unittest.TestCase):
         cfg = self.load()
         with patch.dict(service.BASE_PACKAGE_ROOTS, {"corex": package_root.resolve()}, clear=True):
             service.validate_base_packages(cfg)
+            original_metadata = (dist_info / "METADATA").read_text()
+            (dist_info / "METADATA").write_text(
+                original_metadata.replace("Metadata-Version: 2.1", "Metadata-Version: 2.2"),
+            )
+            with self.assertRaisesRegex(ValueError, "base package file mismatch"):
+                service.validate_base_packages(cfg)
+            (dist_info / "METADATA").write_text(original_metadata)
             (dist_info / "RECORD").write_text("changed\n")
             with self.assertRaisesRegex(ValueError, "RECORD mismatch"):
                 service.validate_base_packages(cfg)
@@ -278,6 +299,34 @@ class ServiceConfigurationTest(unittest.TestCase):
               patch.object(service, "LOCK_FILES", (lock,))):
             with self.assertRaisesRegex(ValueError, "extra=.*rogue"):
                 service.validate_local_packages()
+
+    def test_validates_full_source_checkout_revision_patch_and_diff(self):
+        other = self.source / "cosyvoice/other.py"
+        other.write_text("tracked source\n")
+        subprocess.run(["git", "init", "-q", str(self.source)], check=True)
+        subprocess.run(["git", "-C", str(self.source), "config", "user.name", "test"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "config", "user.email", "test@example.com"], check=True)
+        subprocess.run(["git", "-C", str(self.source), "add", "."], check=True)
+        subprocess.run(["git", "-C", str(self.source), "commit", "-qm", "base"], check=True)
+        for relative in self.cfg["source_checksums"]:
+            path = self.source / relative
+            path.write_bytes(path.read_bytes() + b"patched")
+            self.cfg["source_checksums"][relative] = digest(path)
+        self.cfg["source_revision"] = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        source_diff = subprocess.run(
+            ["git", "-C", str(self.source), "diff", "--no-ext-diff", "--binary",
+             "HEAD", "--", "."], check=True, capture_output=True,
+        ).stdout
+        self.cfg["source_tree_diff_sha256"] = hashlib.sha256(source_diff).hexdigest()
+        self.write_config()
+        cfg = self.load()
+        service.validate_source_checkout(cfg)
+        other.write_text("changed after provisioning\n")
+        with self.assertRaisesRegex(ValueError, "working tree mismatch"):
+            service.validate_source_checkout(cfg)
 
     def test_rejects_clipped_fixed_voice(self):
         with wave.open(str(self.prompt), "rb") as source:

@@ -19,6 +19,12 @@
   },
   "source": "../runtime/CosyVoice",
   "source_revision": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
+  "source_patch": "../patches/corex-runtime.patch",
+  "source_patch_sha256": "f4d0b1e7e10fa4353af5ba64b078af9b453882f5f70dac472a41dd92542679dc",
+  "source_tree_diff_sha256": "6b0476e963240717cd28277172cac605bc1c184752a5f4cfe02f2e61806e9ccb",
+  "source_submodules": {
+    "third_party/Matcha-TTS": "dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
+  },
   "base_packages": "corex-packages.json",
   "source_checksums": {
     "cosyvoice/cli/cosyvoice.py": "60388026ffd276bd92e215aa992409ea3f980e6ec3cfe07eb2f4463a49d6d6ee",

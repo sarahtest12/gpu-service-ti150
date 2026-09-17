@@ -25,12 +25,13 @@ FastAPI/Uvicorn 只监听 `127.0.0.1:8004`，NGINX 通过统一端口公开
 [`requirements.lock`](requirements.lock) 与 [`requirements-build.lock`](requirements-build.lock)
 固定服务自带依赖的版本和安装包 SHA-256，bootstrap 以 `--require-hashes --no-deps` 安装，不在部署时
 重新解析传递依赖，并在每次执行时从空虚拟环境重建。独立 `.venv` 优先加载这些包，再从 CoreX
-基础镜像加载厂商 torch/torchaudio；[`config/corex-packages.json`](config/corex-packages.json) 固定所有
-继承包的版本、安装根和 RECORD 指纹，启动检查拒绝本地包残留或基础镜像依赖漂移。
+基础镜像加载厂商 torch/torchaudio；[`config/corex-packages.json`](config/corex-packages.json) 固定
+实际模型加载闭包中 92 个继承包的版本、安装根、RECORD 指纹和其中每个源码/二进制文件哈希。
+模型加载后还会核对实际导入包集合，启动检查拒绝本地包残留或基础镜像依赖漂移。
 不安装通用 PyTorch、CUDA、
 `onnxruntime-gpu`、vLLM 或 TensorRT。语音 tokenizer 的 ONNX 会话明确使用 CPU provider，TTS
-主模型在 GPU 执行。启动检查会实际分配一个 CUDA FP16 tensor，模型加载后再次确认内部设备和
-FP16 标志。
+主模型在 GPU 执行。启动检查会实际分配一个 CUDA FP16 tensor，并验证官方源码仓库 HEAD、
+完整允许差异和 Matcha-TTS 子模块 revision；模型加载后再次确认内部设备、FP16 标志和导入包集合。
 
 固定参考音色来自 AISHELL-3 的 Apache-2.0 女声 SSB0005。来源 revision、原始文件哈希、裁剪点、
 官方转写索引、文本和派生 24 kHz WAV 哈希记录在

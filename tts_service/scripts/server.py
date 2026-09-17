@@ -146,6 +146,21 @@ async def send_audio_chunk(websocket, chunk, timeout):
         ) from error
 
 
+async def send_control(websocket, event, timeout):
+    try:
+        await asyncio.wait_for(websocket.send_json(event), timeout)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+async def close_websocket(websocket, code, timeout, reason=None):
+    try:
+        await asyncio.wait_for(websocket.close(code=code, reason=reason), timeout)
+    except (asyncio.TimeoutError, RuntimeError):
+        pass
+
+
 async def run_utterance(websocket, engine, cfg, first_text, request_id, utterance_id):
     text_stream = TextStream(cfg["text_queue_chunks"])
     text_stream.append(first_text, timeout=0)
@@ -154,8 +169,14 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
     iterator = engine.synthesize(text_stream, request_id, utterance_id)
     receive_task = None
     output_task = None
-    await websocket.send_json({"type": "audio.start", "utterance_id": utterance_id})
     try:
+        if not await send_control(
+            websocket, {"type": "audio.start", "utterance_id": utterance_id},
+            cfg["output_timeout_seconds"],
+        ):
+            raise ProtocolError(
+                "output_timeout", "timed out sending a control event", fatal=True,
+            )
         receive_task = asyncio.create_task(
             receive_message(websocket, cfg, cfg["input_timeout_seconds"]),
         )
@@ -190,7 +211,12 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
                         )
                     if protocol_error.fatal:
                         raise protocol_error
-                    await websocket.send_json(error_event(protocol_error))
+                    if not await send_control(
+                        websocket, error_event(protocol_error), cfg["output_timeout_seconds"],
+                    ):
+                        raise ProtocolError(
+                            "output_timeout", "timed out sending a control event", fatal=True,
+                        )
                     text_stream.cancel()
                     return
                 receive_task = asyncio.create_task(
@@ -208,7 +234,13 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
                             "inference_failed", "TTS inference ended before input.done", fatal=True,
                         )
                     await stop_task(receive_task)
-                    await websocket.send_json({"type": "audio.done", "utterance_id": utterance_id})
+                    if not await send_control(
+                        websocket, {"type": "audio.done", "utterance_id": utterance_id},
+                        cfg["output_timeout_seconds"],
+                    ):
+                        raise ProtocolError(
+                            "output_timeout", "timed out sending a control event", fatal=True,
+                        )
                     return
                 await send_audio_chunk(websocket, chunk, cfg["output_timeout_seconds"])
                 output_task = asyncio.create_task(asyncio.to_thread(next_output, iterator))
@@ -237,7 +269,9 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
 
 
 async def serve_session(websocket, engine, cfg, request_id, session_id):
-    await websocket.send_json({
+    control_timeout = cfg["output_timeout_seconds"]
+    fatal_timeout = min(control_timeout, 5)
+    if not await send_control(websocket, {
         "type": "session.created",
         "session_id": session_id,
         "model": cfg["model_name"],
@@ -247,7 +281,9 @@ async def serve_session(websocket, engine, cfg, request_id, session_id):
             "sample_rate_hz": cfg["sample_rate_hz"],
             "channels": 1,
         },
-    })
+    }, control_timeout):
+        await close_websocket(websocket, 1011, fatal_timeout, "output_timeout")
+        return
     while True:
         try:
             message = await receive_message(
@@ -255,16 +291,19 @@ async def serve_session(websocket, engine, cfg, request_id, session_id):
             )
             kind, text = parse_idle_message(message, cfg)
         except ProtocolError as error:
-            await websocket.send_json(error_event(error))
-            if error.fatal:
-                await websocket.close(code=1011, reason=error.code)
+            sent = await send_control(websocket, error_event(error), control_timeout)
+            if error.fatal or not sent:
+                await close_websocket(
+                    websocket, 1011, fatal_timeout,
+                    error.code if sent else "output_timeout",
+                )
                 return
             continue
         except EOFError:
             return
 
         if kind == "session.close":
-            await websocket.close(code=1000)
+            await close_websocket(websocket, 1000, fatal_timeout)
             return
         utterance_id = "utt_" + secrets.token_hex(12)
         try:
@@ -274,8 +313,12 @@ async def serve_session(websocket, engine, cfg, request_id, session_id):
         except EOFError:
             return
         except ProtocolError as error:
-            await websocket.send_json(error_event(error))
-            await websocket.close(code=1011, reason=error.code)
+            # A timed-out PCM write proves this socket is backpressured. Do not
+            # retry an error frame on the same path; bound both other fatal
+            # error reporting and the close handshake so the sole slot releases.
+            if error.code != "output_timeout":
+                await send_control(websocket, error_event(error), fatal_timeout)
+            await close_websocket(websocket, 1011, fatal_timeout, error.code)
             return
 
 
@@ -372,6 +415,8 @@ def main():
     cfg = load_runtime_config(args.config)
     token = args.key_file.read_text().strip()
     engine = load_engine(cfg)
+    import service
+    service.validate_imported_packages(cfg)
     LOG.info("TTS ready on ws://%s:%d/realtime", cfg["host"], cfg["port"])
     uvicorn.run(create_app(engine, cfg, token), host=cfg["host"], port=cfg["port"],
                 workers=1, access_log=True)

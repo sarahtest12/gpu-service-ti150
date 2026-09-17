@@ -21,7 +21,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from engine import CosyVoice3Engine
 from server import (ProtocolError, VendorPayloadFilter, create_app, load_runtime_config,
-                    send_audio_chunk, validate_loaded_model)
+                    send_audio_chunk, serve_session, validate_loaded_model)
 
 
 class Tensor:
@@ -128,6 +128,7 @@ class TtsServerTest(unittest.TestCase):
             path = Path(directory) / "server.json"
             path.write_text(json.dumps({
                 "source": "source",
+                "source_patch": "source.patch",
                 "base_packages": "base-packages.json",
                 "voice_manifest": "voice.json",
                 "prompt_wav": "voice.wav",
@@ -137,6 +138,7 @@ class TtsServerTest(unittest.TestCase):
                 cfg = load_runtime_config(path)
         self.assertEqual(cfg["prompt_text"], "validated fixed prompt")
         self.assertEqual(cfg["source"], str((path.parent / "source").resolve()))
+        self.assertEqual(cfg["source_patch"], str((path.parent / "source.patch").resolve()))
         self.assertEqual(cfg["base_packages"], str((path.parent / "base-packages.json").resolve()))
         self.assertEqual(cfg["voice_manifest"], str((path.parent / "voice.json").resolve()))
         self.assertEqual(cfg["prompt_wav"], str((path.parent / "voice.wav").resolve()))
@@ -169,6 +171,44 @@ class TtsServerTest(unittest.TestCase):
             asyncio.run(send_audio_chunk(StalledWebSocket(), b"pcm", 0.01))
         self.assertEqual((caught.exception.code, caught.exception.fatal),
                          ("output_timeout", True))
+
+    def test_stalled_socket_releases_session_after_output_timeout(self):
+        class BackpressuredWebSocket:
+            def __init__(self):
+                self.backpressured = False
+                self.messages = [{
+                    "type": "websocket.receive",
+                    "text": json.dumps({"type": "input.text", "text": "触发输出。"}),
+                }]
+
+            async def receive(self):
+                if self.messages:
+                    return self.messages.pop(0)
+                await asyncio.Event().wait()
+
+            async def send_json(self, event):
+                if self.backpressured:
+                    await asyncio.Event().wait()
+
+            async def send_bytes(self, chunk):
+                self.backpressured = True
+                await asyncio.Event().wait()
+
+            async def close(self, code, reason=None):
+                await asyncio.Event().wait()
+
+        async def exercise():
+            cfg = configuration()
+            cfg["output_timeout_seconds"] = 0.01
+            websocket = BackpressuredWebSocket()
+            await asyncio.wait_for(
+                serve_session(websocket, self.engine, cfg, "request", "session"),
+                0.2,
+            )
+            return websocket
+
+        websocket = asyncio.run(exercise())
+        self.assertTrue(websocket.backpressured)
 
     def test_auth_internal_health_metrics_and_removed_http_business_routes(self):
         self.assertEqual(self.client.get("/health").status_code, 401)

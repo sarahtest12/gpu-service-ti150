@@ -11,14 +11,16 @@ AISHELL-3 Apache-2.0 女声 `aishell3-female`。
   运行所需文件的 SHA-256 由 `config/server.json` 固定并经 `service.py check` 复验。
 - 源码：`QwenAudio/CosyVoice` revision
   `074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc`。四个运行时源码文件的补丁后 SHA-256
-  由配置固定；补丁已在该 revision 的干净 worktree 上通过 `git apply --check`。
+  由配置固定；补丁已在该 revision 的干净 worktree 上通过 `git apply --check`。启动时还会核对
+  Git HEAD、整个工作树的允许差异摘要，以及 Matcha-TTS 子模块 revision 和清洁状态。
 - 音色：AISHELL-3 SSB0005 女声派生参考音频，24000 Hz、单声道、187023 samples，
   SHA-256 `61c805554489cac6a89438f2551a6e53ab71bf9205d4b7d0a70fd738c02441b1`。
 - 关键运行时：torch/torchaudio `2.7.1+corex.4.4.0`、ONNX Runtime `1.17.3`、
   transformers `4.51.3`、x-transformers `2.11.24`、pyworld `0.3.4`。
 - 服务自带 Python 包由两个 requirements lock 文件固定版本及安装包 SHA-256；每次 bootstrap
-  都从空虚拟环境重建，并拒绝锁文件之外的残留包。50 个来自 BI150 CoreX/系统镜像的传递依赖由
-  `config/corex-packages.json` 固定版本、安装根和 RECORD SHA-256，启动时逐项复验。已在新建的
+  都从空虚拟环境重建，并拒绝锁文件之外的残留包。92 个来自 BI150 CoreX/系统镜像、且属于实际
+  模型加载闭包的传递依赖由 `config/corex-packages.json` 固定版本、安装根和 RECORD SHA-256；
+  启动时还按 RECORD 逐个复验源码和二进制文件，模型加载后核对实际导入包集合。已在新建的
   Python 3.10 `--system-site-packages` 虚拟环境中以 `--require-hashes --no-deps` 完整安装，并
   成功导入 CosyVoice3、CoreX torch、CPU ONNX Runtime 和 pyworld。
 - 固定音色实测时长 7.792625 秒，峰值 12078，首尾静音各 0.2 秒，边缘噪声分别为
@@ -110,15 +112,17 @@ utterance，首个 PCM 分别为 1.724061 秒、1.539448 秒和 1.529806 秒，�
 
 ## 独立审查后的加固复验
 
-独立审查后补齐了客户端取消与重连隔离、服务端收发同时完成时的状态竞争、PCM 发送超时、
+独立审查后补齐了客户端取消与重连隔离、服务端收发同时完成时的状态竞争、PCM 及控制帧发送超时、
 `generation_config.json` 哈希、固定音色官方转写与环境噪声门禁，以及 Python 环境复现检查。
 CosyVoice 运行时不再导入 ModelScope 或按模型名自动下载；bootstrap 从空虚拟环境安装 36 个
-哈希锁定的服务包，启动时再校验 50 个 CoreX/系统继承包。固定音色清单自身也由配置哈希固定。
+哈希锁定的服务包，启动时再校验 92 个 CoreX/系统继承包的 RECORD 和实际文件内容，并验证主仓
+HEAD、完整允许差异及 Matcha-TTS 子模块 revision。固定音色清单自身也由配置哈希固定。
 
-最终 TTS 测试 48 项通过；网关测试 15 项通过（4 项需显式开启的真机集成测试跳过），监控测试
+最终 TTS 测试 50 项通过；网关测试 15 项通过（4 项需显式开启的真机集成测试跳过），监控测试
 6 项通过，OpenAPI 3.1.1 校验通过。NGINX 配置、`service.py check`、干净官方 revision 上的
-`git apply --check` 和 `git diff --check` 均通过。新进程 PID 2108870 已就绪，TTS 显存
-4188.013 MB；YOLO、VLM、RAG、ASR、TTS、监控和网关均为 `managed: true`、`ready: true`。
+`git apply --check` 和 `git diff --check` 均通过。最终复审补充修复后的进程 PID 2164597 已就绪，
+TTS 显存 4215.276 MB；YOLO、VLM、RAG、ASR、TTS、监控和网关均为 `managed: true`、
+`ready: true`。完整基础包文件校验约耗时 47 秒，只在服务启动门禁执行。
 
 重启后的第一次公共 WSS 请求包含模型热身：输入在 8.005937 秒结束，首 PCM 在 10.792735 秒
 到达，因此该次只记录为冷启动数据，不作为双流通过证据；同一连接的下一条首 PCM 为
@@ -126,3 +130,9 @@ CosyVoice 运行时不再导入 ModelScope 或按模型名自动下载；bootstr
 15.002580 秒发送，严格双向流式成立。最终输出 1194240 字节 PCM，总耗时 40.408167 秒，
 SHA-256 为 `20ea74f58ef0ef7ff9ff5928b97451915dbcdfbc662aa6518eee18935be6f7d9`。
 验证文本未出现在 TTS 或网关日志中。
+
+最终复审修复后再次经过统一 WSS 入口验证：重启后的首次请求保持输入开放 15 秒，首 PCM 在
+4.220861 秒到达，`input.done` 在 15.003872 秒发送；最终得到 925440 字节 PCM，总耗时
+33.320473 秒，SHA-256 为
+`138119d058928cc27b36bca6145bd78dc9f3f2c7f499b74e8555939d3f21c25f`。近 60 秒 TTS TTFT
+平均 888.947 ms、P95 1248 ms，验证文本仍未写入 TTS 或网关日志。

@@ -3,8 +3,10 @@
 
 import argparse
 from array import array
+import base64
+import csv
 import hashlib
-from importlib.metadata import distributions, version
+from importlib.metadata import distributions, packages_distributions, version
 import ipaddress
 import json
 import math
@@ -177,12 +179,106 @@ def validate_base_packages(cfg):
                 or BASE_PACKAGE_ROOTS[expected["root"]] not in record.resolve().parents
                 or sha256(record) != expected["record_sha256"]):
             raise ValueError(f"base package RECORD mismatch: {name}")
+        install_prefix = BASE_PACKAGE_ROOTS[expected["root"]].parents[2]
+        with record.open(newline="") as record_file:
+            for relative, encoded_digest, size in csv.reader(record_file):
+                if (not encoded_digest or "__pycache__" in Path(relative).parts
+                        or relative.endswith((".pyc", ".pyo"))):
+                    continue
+                algorithm, separator, value = encoded_digest.partition("=")
+                if algorithm != "sha256" or not separator:
+                    raise ValueError(f"unsupported RECORD digest for base package: {name}")
+                installed_file = Path(package.locate_file(relative)).resolve()
+                if not installed_file.is_file() and relative.startswith("../"):
+                    # The BI150 image keeps wheel entry points and shared data
+                    # under site-packages instead of their ../../bin or
+                    # ../../share wheel destinations.
+                    relative_parts = list(Path(relative).parts)
+                    while relative_parts and relative_parts[0] in ("..", "."):
+                        relative_parts.pop(0)
+                    relocated = BASE_PACKAGE_ROOTS[expected["root"]].joinpath(
+                        *relative_parts,
+                    ).resolve()
+                    if relocated.is_file():
+                        installed_file = relocated
+                if (not installed_file.is_file()
+                        or install_prefix not in installed_file.parents
+                        or (size and installed_file.stat().st_size != int(size))):
+                    raise ValueError(f"base package file mismatch: {name}: {relative}")
+                expected_digest = base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+                actual_digest = bytes.fromhex(sha256(installed_file))
+                if actual_digest != expected_digest:
+                    raise ValueError(f"base package file mismatch: {name}: {relative}")
+
+
+def validate_imported_packages(cfg):
+    allowed = set(locked_packages()) | set(read_base_package_manifest(cfg)) | {
+        "pip", "setuptools",
+    }
+    package_mapping = packages_distributions()
+    imported = set()
+    for module_name, module in sys.modules.items():
+        if module is None:
+            continue
+        imported.update(
+            canonical_package_name(name)
+            for name in package_mapping.get(module_name.split(".")[0], ())
+        )
+    unexpected = sorted(imported - allowed)
+    if unexpected:
+        raise ValueError(f"unlocked imported Python packages: {unexpected}")
+
+
+def git_output(source, *args):
+    try:
+        return subprocess.run(
+            ["git", "-C", str(source), *args], check=True, capture_output=True,
+        ).stdout
+    except subprocess.CalledProcessError as error:
+        raise ValueError("pinned CosyVoice source is not a valid checkout") from error
+
+
+def validate_source_checkout(cfg):
+    source = Path(cfg["source"])
+    if git_output(source, "rev-parse", "HEAD").decode().strip() != cfg["source_revision"]:
+        raise ValueError("pinned CosyVoice source revision mismatch")
+    patch = Path(cfg["source_patch"])
+    if not patch.is_file() or sha256(patch) != cfg["source_patch_sha256"]:
+        raise ValueError("pinned CosyVoice patch mismatch")
+    expected_status = {f" M {name}" for name in cfg["source_checksums"]}
+    actual_status = set(git_output(
+        source, "status", "--porcelain=v1", "--untracked-files=all",
+    ).decode().splitlines())
+    if actual_status != expected_status:
+        raise ValueError("pinned CosyVoice working tree mismatch")
+    tree_diff = git_output(source, "diff", "--no-ext-diff", "--binary", "HEAD", "--", ".")
+    if hashlib.sha256(tree_diff).hexdigest() != cfg["source_tree_diff_sha256"]:
+        raise ValueError("pinned CosyVoice source diff mismatch")
+
+    configured = cfg["source_submodules"]
+    observed = {}
+    for line in git_output(source, "submodule", "status", "--recursive").decode().splitlines():
+        if not line or line[0] != " ":
+            raise ValueError("pinned CosyVoice submodule is not clean")
+        fields = line[1:].split()
+        if len(fields) < 2:
+            raise ValueError("invalid CosyVoice submodule status")
+        observed[fields[1]] = fields[0]
+    if observed != configured:
+        raise ValueError("pinned CosyVoice submodule revision mismatch")
+    for relative, expected_revision in configured.items():
+        submodule = source / relative
+        if (git_output(submodule, "rev-parse", "HEAD").decode().strip() != expected_revision
+                or git_output(
+                    submodule, "status", "--porcelain=v1", "--untracked-files=all",
+                ).strip()):
+            raise ValueError(f"pinned CosyVoice submodule mismatch: {relative}")
 
 
 def resolve_config_paths(cfg, config_path):
     """Resolve checkout-owned paths relative to the config file."""
     base = Path(config_path).resolve().parent
-    for key in ("source", "voice_manifest", "prompt_wav", "base_packages"):
+    for key in ("source", "source_patch", "voice_manifest", "prompt_wav", "base_packages"):
         value = cfg.get(key)
         if not isinstance(value, str) or not value:
             raise ValueError(f"invalid {key}")
@@ -347,6 +443,15 @@ def config(*, require_artifacts=True):
     positive(cfg, "minimum_free_memory_mb", integer=True, maximum=32768)
     revision(cfg["model_revision"], "model_revision")
     revision(cfg["source_revision"], "source_revision")
+    if (not re.fullmatch(r"[0-9a-f]{64}", cfg.get("source_patch_sha256", ""))
+            or not re.fullmatch(r"[0-9a-f]{64}", cfg.get("source_tree_diff_sha256", ""))
+            or not isinstance(cfg.get("source_submodules"), dict)):
+        raise ValueError("invalid pinned CosyVoice source metadata")
+    for relative, submodule_revision in cfg["source_submodules"].items():
+        if (not isinstance(relative, str) or not relative
+                or Path(relative).is_absolute() or ".." in Path(relative).parts):
+            raise ValueError("invalid CosyVoice submodule path")
+        revision(submodule_revision, "CosyVoice submodule revision")
     if (cfg["model_name"] != "fun-cosyvoice3-0.5b-2512"
             or cfg["device"] != 0
             or cfg["sample_rate_hz"] != 24000
@@ -478,6 +583,7 @@ def check(cfg):
         raise ValueError(f"run this command with {PYTHON}")
     validate_local_packages()
     validate_base_packages(cfg)
+    validate_source_checkout(cfg)
     for package, expected in EXPECTED.items():
         actual = version(package)
         if actual != expected:

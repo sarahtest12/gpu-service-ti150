@@ -1,5 +1,11 @@
 {
   "packages": {
+    "accelerate": {
+      "name": "accelerate",
+      "record_sha256": "d0a55f766c4945c2dbf2c9c1c0187e2c2390f3a2a35f15a487b51cb03ea6eb5c",
+      "root": "system",
+      "version": "1.0.1"
+    },
     "annotated-doc": {
       "name": "annotated-doc",
       "record_sha256": "3cabaeb9b999ed65faddf624678c7e9d6886c82d7bfae5434b494867ef305cd1",
@@ -24,11 +30,29 @@
       "root": "corex",
       "version": "4.12.1"
     },
+    "apex": {
+      "name": "apex",
+      "record_sha256": "92f0341c625b5be1d28a24c4c08e41d9a399d1ab8050bf86c4954ff44abe146b",
+      "root": "corex",
+      "version": "0.1+corex.4.4.0"
+    },
+    "audioread": {
+      "name": "audioread",
+      "record_sha256": "fa4b4c572bddfc6e72d750a417e1089b3151d9588b6fcdbec70cf1c3e88039d4",
+      "root": "system",
+      "version": "3.1.0"
+    },
     "beautifulsoup4": {
       "name": "beautifulsoup4",
       "record_sha256": "c466b1086431435d6e3ba927ff354e403341144afceb23f74f909b8f5cb387e2",
       "root": "system",
       "version": "4.14.3"
+    },
+    "brotli": {
+      "name": "brotli",
+      "record_sha256": "93c7880a9e1605468959f583d47acc3553a1403828ce154b5bc59f2ca7e02632",
+      "root": "system",
+      "version": "1.2.0"
     },
     "certifi": {
       "name": "certifi",
@@ -54,6 +78,54 @@
       "root": "corex",
       "version": "8.3.1"
     },
+    "contourpy": {
+      "name": "contourpy",
+      "record_sha256": "084bc0c7c2c9f3dd30b251dddfcccdd19971b76cbe369689f4245ecadb510eaf",
+      "root": "system",
+      "version": "1.3.2"
+    },
+    "cycler": {
+      "name": "cycler",
+      "record_sha256": "cc7e94d56e5f6d77f3fc63948b54dccb481f6970595ee8ab6eda43d868e22261",
+      "root": "system",
+      "version": "0.12.1"
+    },
+    "decorator": {
+      "name": "decorator",
+      "record_sha256": "dfdd78ac85186a1fabf0c206070531770c04eaf6b93663d2dacefcb047300224",
+      "root": "corex",
+      "version": "5.2.1"
+    },
+    "deepspeed": {
+      "name": "deepspeed",
+      "record_sha256": "5da9f276145980f1446de4bfccceb1f4b05cd7c17733b2377ac36471a94e8522",
+      "root": "corex",
+      "version": "0.16.4+corex.4.4.0"
+    },
+    "defusedxml": {
+      "name": "defusedxml",
+      "record_sha256": "2bbc0f917fc306dc6134e74f4d3fca83a7ecb37d5697d98a46631b3f08b16dc8",
+      "root": "system",
+      "version": "0.7.1"
+    },
+    "dill": {
+      "name": "dill",
+      "record_sha256": "69ff8ebc4ba17c8f0f73489645ba8e51cbc270e0cdc64a907387c454b6ba913c",
+      "root": "corex",
+      "version": "0.4.0"
+    },
+    "dnspython": {
+      "name": "dnspython",
+      "record_sha256": "a7828d8872378d9f02902873a7f4ddc04eb87f43bc8c652dabb526f142e5dfb6",
+      "root": "corex",
+      "version": "2.8.0"
+    },
+    "email-validator": {
+      "name": "email-validator",
+      "record_sha256": "e6323fa18061329884395645ccade2901e871b2b74a18706123a8587a456ade6",
+      "root": "corex",
+      "version": "2.3.0"
+    },
     "exceptiongroup": {
       "name": "exceptiongroup",
       "record_sha256": "669a02cf632e1e4e1896c7b3680be256683aea53e11a0ed823c90501030dd746",
@@ -72,6 +144,24 @@
       "root": "corex",
       "version": "3.23.0"
     },
+    "flash-attn": {
+      "name": "flash_attn",
+      "record_sha256": "a9411dda7c3fc9d54345cea1bba50ece70e2074256f793a4fa83023b064c2d26",
+      "root": "corex",
+      "version": "2.6.3+corex.4.4.0"
+    },
+    "fonttools": {
+      "name": "fonttools",
+      "record_sha256": "c2771b5d62c57b4beb2d025982b4ed653cebbca9014a77783ccebc100f56b599",
+      "root": "system",
+      "version": "4.61.1"
+    },
+    "googleapis-common-protos": {
+      "name": "googleapis-common-protos",
+      "record_sha256": "a7784579bbc2770a9fa34964ef67c556772694cd63608170bbaabdb12c9a2181",
+      "root": "system",
+      "version": "1.75.0"
+    },
     "h11": {
       "name": "h11",
       "record_sha256": "fb9ce0853bf149aa7cbe868c1c128e8408ae933145e032b102d384759fd7a4ed",
@@ -83,6 +173,12 @@
       "record_sha256": "70cf1d4d42e2f7f0f798e50f002ab8d8c2fd5cad3b8ebf5e84a4f98172dd96df",
       "root": "corex",
       "version": "1.2.0"
+    },
+    "hjson": {
+      "name": "hjson",
+      "record_sha256": "474cf17ace3b426fd89f54d319239d5cd3656c87488331ce73cac0fc6d83c452",
+      "root": "corex",
+      "version": "3.1.0"
     },
     "idna": {
       "name": "idna",
@@ -102,6 +198,30 @@
       "root": "corex",
       "version": "3.1.6"
     },
+    "joblib": {
+      "name": "joblib",
+      "record_sha256": "e1d4bcafa03069d46b290dbfe6298aeb6f4ec414f470320004e6bd4fa6b004c4",
+      "root": "corex",
+      "version": "1.5.3"
+    },
+    "kiwisolver": {
+      "name": "kiwisolver",
+      "record_sha256": "7c7679aab931161c1f1950592856f0b63fb116317e748557cf8c92caf2c04db4",
+      "root": "system",
+      "version": "1.4.9"
+    },
+    "lazy-loader": {
+      "name": "lazy-loader",
+      "record_sha256": "076477165e94f42b9353d22aa2bd2802c2a1fafcdba8b2bce02ebfa849537f23",
+      "root": "system",
+      "version": "0.5"
+    },
+    "librosa": {
+      "name": "librosa",
+      "record_sha256": "a0531b817ad83ee0d2fbe40e94ffc6fbad2f56eba6a87981c6fc7fed96e81261",
+      "root": "system",
+      "version": "0.11.0"
+    },
     "llvmlite": {
       "name": "llvmlite",
       "record_sha256": "fe07eef73d66641ec422fc792a2197b38e93f03f9bc67280a29e9d22da7773c7",
@@ -114,11 +234,23 @@
       "root": "corex",
       "version": "0.7.3"
     },
+    "lxml": {
+      "name": "lxml",
+      "record_sha256": "d372a0a9b3641eadb375441c8772bd3105c80c5b7541cf781fead62e7f72a897",
+      "root": "corex",
+      "version": "6.0.2"
+    },
     "markupsafe": {
       "name": "MarkupSafe",
       "record_sha256": "e4b9ef2a396d23539ec5695a589216366d63053a5f3971325a8fa6881f49c91f",
       "root": "corex",
       "version": "3.0.3"
+    },
+    "matplotlib": {
+      "name": "matplotlib",
+      "record_sha256": "b5ccf4970ad3a8ca1e14590c1e80de45b9b2145307af0d3ab0e17f2be79a3cf3",
+      "root": "system",
+      "version": "3.10.8"
     },
     "more-itertools": {
       "name": "more-itertools",
@@ -132,11 +264,23 @@
       "root": "corex",
       "version": "1.3.0"
     },
+    "msgpack": {
+      "name": "msgpack",
+      "record_sha256": "a9435426b2cac4b35538ee5c62a61c6b117924bb3a09ec3d9e48fc5c514e38bd",
+      "root": "corex",
+      "version": "1.1.2"
+    },
     "networkx": {
       "name": "networkx",
       "record_sha256": "441c9c9d2aeac36e6e07f100f389b7b266d885482602bdda189ea2463353299f",
       "root": "corex",
       "version": "3.4.2"
+    },
+    "ninja": {
+      "name": "ninja",
+      "record_sha256": "b8014bf6dbe86cd0ab46daed77b346258c4f42aa2752b3c6ac43b19e4787ef37",
+      "root": "corex",
+      "version": "1.13.0"
     },
     "numba": {
       "name": "numba",
@@ -156,6 +300,18 @@
       "root": "corex",
       "version": "12.1.1"
     },
+    "platformdirs": {
+      "name": "platformdirs",
+      "record_sha256": "4d247b729aa09b6ab25ac8550705fec7bf02ee2acc5004b8f2d20a589063ecc3",
+      "root": "corex",
+      "version": "4.8.0"
+    },
+    "pooch": {
+      "name": "pooch",
+      "record_sha256": "5957902d764f2a82daa4ae7926ef0437f530c1b81bf539310dd7caa0b1298fff",
+      "root": "system",
+      "version": "1.9.0"
+    },
     "prometheus-client": {
       "name": "prometheus_client",
       "record_sha256": "a6a81a057589029da655de97d56fd1e76c226a8f8c3266060cfda13be1c7d662",
@@ -167,6 +323,24 @@
       "record_sha256": "cb998781253fda25fd95558ea6a87879ca4897cbdcf79da2709264c8da4ce3ea",
       "root": "system",
       "version": "7.35.1"
+    },
+    "psutil": {
+      "name": "psutil",
+      "record_sha256": "304523ec043f959a86c96becff15cc70949114e462e23e1847c7bacd11b9cd87",
+      "root": "corex",
+      "version": "7.2.2"
+    },
+    "py-cpuinfo": {
+      "name": "py-cpuinfo",
+      "record_sha256": "eee3d85d9ee27694c44c4dcb7e902b415b83537acc8512710d1fe1cdd54c4421",
+      "root": "corex",
+      "version": "9.0.0"
+    },
+    "pyarrow": {
+      "name": "pyarrow",
+      "record_sha256": "162fb97b9cb6b4a3823792da292c82e89af0e4dac3ffb0310c245946e5e8720d",
+      "root": "corex",
+      "version": "23.0.0"
     },
     "pycparser": {
       "name": "pycparser",
@@ -185,6 +359,24 @@
       "record_sha256": "24e7a214b645718c2255f88296ab68b372ed049ba771ccb9715e55c4f58a86e0",
       "root": "corex",
       "version": "2.41.5"
+    },
+    "pynvml": {
+      "name": "pynvml",
+      "record_sha256": "6e8dc72a76c1b1c31e23aff43766dcc2eb2cb88a382b8114f30b88fc4d3d2ef6",
+      "root": "corex",
+      "version": "11.5.3+corex.4.4.0"
+    },
+    "pyparsing": {
+      "name": "pyparsing",
+      "record_sha256": "2fe4f51753672db483d3b2246d113b5f53111e8fa8de59edb2334da2465b8df5",
+      "root": "system",
+      "version": "3.3.2"
+    },
+    "python-dateutil": {
+      "name": "python-dateutil",
+      "record_sha256": "1876f5982b4e1f1137988181f354b10fe2f28886dbe4ee638a96f5ed0e02a70e",
+      "root": "corex",
+      "version": "2.9.0.post0"
     },
     "pyyaml": {
       "name": "PyYAML",
@@ -210,11 +402,35 @@
       "root": "corex",
       "version": "0.7.0"
     },
+    "scikit-learn": {
+      "name": "scikit-learn",
+      "record_sha256": "3ab26b0efb2003e2cedec7bed5be599a3131c24dda2bd5c5a5e5212105d86512",
+      "root": "system",
+      "version": "1.5.1"
+    },
     "scipy": {
       "name": "scipy",
       "record_sha256": "e5372c6fe03595e9d3dd6960d3fa23f0db13dfd6c26713f99e1c03ccb7fa1e68",
       "root": "corex",
       "version": "1.15.3"
+    },
+    "simplejson": {
+      "name": "simplejson",
+      "record_sha256": "b269fed48807ee32c363b7927e9023d523129f557de150aba462152e8543ed38",
+      "root": "system",
+      "version": "4.1.1"
+    },
+    "six": {
+      "name": "six",
+      "record_sha256": "5fa0bbc20b0426d59bd09f011e1c92cdc63216baa92ca252550d3518a6ce4f2d",
+      "root": "corex",
+      "version": "1.17.0"
+    },
+    "sniffio": {
+      "name": "sniffio",
+      "record_sha256": "82050841c0e47373f99494e77ca03c0c4962bfa02465d80b8e98642236983f98",
+      "root": "corex",
+      "version": "1.3.1"
     },
     "soundfile": {
       "name": "soundfile",
@@ -228,6 +444,12 @@
       "root": "system",
       "version": "2.8.3"
     },
+    "soxr": {
+      "name": "soxr",
+      "record_sha256": "0d9b8f47ed86ad9a531fff21a6646d7ebffe5e91d81f18ba2bf66e71c3a27453",
+      "root": "system",
+      "version": "1.1.0"
+    },
     "starlette": {
       "name": "starlette",
       "record_sha256": "c442618ad8f1b619247d6843504f6a46184b0333c8770e82ad08b1e1ed98b81f",
@@ -239,6 +461,18 @@
       "record_sha256": "e0fd21a91b7a5b74a3d130880fac7a0c2c55de15cce214ce5ead81945cbcd7a5",
       "root": "corex",
       "version": "1.14.0"
+    },
+    "tabulate": {
+      "name": "tabulate",
+      "record_sha256": "2f5fe415c671d87464210f86817f59f09ee23d9fbe571032785bf86d5e468baf",
+      "root": "corex",
+      "version": "0.9.0"
+    },
+    "threadpoolctl": {
+      "name": "threadpoolctl",
+      "record_sha256": "38f78c8d9f49840473c93f576560012e2be1487dad80ecd393e95207f698b3cb",
+      "root": "system",
+      "version": "3.6.0"
     },
     "tiktoken": {
       "name": "tiktoken",
@@ -257,6 +491,12 @@
       "record_sha256": "4eb2be4c277b3354a93491d16d6a145c2a5590d17b8d296f0a67e903d0776975",
       "root": "corex",
       "version": "2.7.1+corex.4.4.0"
+    },
+    "torchvision": {
+      "name": "torchvision",
+      "record_sha256": "7174e85aa8c4457ee58919fa82cc3eaa5a46de5bd7abee752249c571fb4ebc3d",
+      "root": "corex",
+      "version": "0.22.1+corex.4.4.0"
     },
     "tqdm": {
       "name": "tqdm",
@@ -282,6 +522,12 @@
       "root": "corex",
       "version": "0.4.2"
     },
+    "ujson": {
+      "name": "ujson",
+      "record_sha256": "b3d3070ed9f1785646d1b32224927519329f967c8de0edaafb2eb04e58321d29",
+      "root": "system",
+      "version": "5.12.0"
+    },
     "urllib3": {
       "name": "urllib3",
       "record_sha256": "54aa2f0d9278347e1e94efe1874fc3f7061a0b899c62761c51af9259d877cb25",
@@ -293,6 +539,12 @@
       "record_sha256": "a6aa792d9a29f3c9ffff2f6c3aa35eb08186c45d535b94cd4ef313190c19d515",
       "root": "corex",
       "version": "0.40.0"
+    },
+    "xxhash": {
+      "name": "xxhash",
+      "record_sha256": "87feb2ec211a3ef75b631388be2a95a4d4e1fede642f8a8d5d74461c85af283d",
+      "root": "corex",
+      "version": "3.6.0"
     },
     "zipp": {
       "name": "zipp",
