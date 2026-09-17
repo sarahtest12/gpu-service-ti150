@@ -26,9 +26,10 @@ fi
 .venv/bin/python -m pip install \
   onnxruntime==1.17.3 HyperPyYAML==1.2.3 transformers==4.51.3 \
   x-transformers==2.11.24 diffusers==0.29.0 inflect==7.3.1 \
-  WeTextProcessing==1.0.3 omegaconf==2.3.0 conformer==0.3.2 \
+  omegaconf==2.3.0 conformer==0.3.2 \
   ruamel.yaml==0.17.40 hydra-core==1.3.2 lightning==2.2.4 \
-  gdown==5.1.0 wget==3.2 huggingface-hub==0.36.2 websockets==15.0.1
+  gdown==5.1.0 wget==3.2 pyworld==0.3.4 \
+  huggingface-hub==0.36.2 websockets==15.0.1
 .venv/bin/python -m pip install --no-build-isolation --no-deps openai-whisper==20231117
 
 mkdir -p runtime
@@ -41,13 +42,10 @@ if [[ ! -d "$TTS_SOURCE_DIR/.git" ]]; then
 fi
 git -C "$TTS_SOURCE_DIR" fetch --depth 1 origin "$TTS_SOURCE_REVISION"
 git -C "$TTS_SOURCE_DIR" checkout --detach "$TTS_SOURCE_REVISION"
+git -C "$TTS_SOURCE_DIR" reset --hard "$TTS_SOURCE_REVISION"
 git -C "$TTS_SOURCE_DIR" submodule update --init --recursive --depth 1
-if git -C "$TTS_SOURCE_DIR" apply --reverse --check "$TTS_PROJECT_DIR/patches/corex-onnx-provider.patch" 2>/dev/null; then
-  :
-else
-  git -C "$TTS_SOURCE_DIR" apply --check "$TTS_PROJECT_DIR/patches/corex-onnx-provider.patch"
-  git -C "$TTS_SOURCE_DIR" apply "$TTS_PROJECT_DIR/patches/corex-onnx-provider.patch"
-fi
+git -C "$TTS_SOURCE_DIR" apply --check "$TTS_PROJECT_DIR/patches/corex-runtime.patch"
+git -C "$TTS_SOURCE_DIR" apply "$TTS_PROJECT_DIR/patches/corex-runtime.patch"
 
 mkdir -p "$TTS_MODEL_DIR"
 TTS_MODEL_DIR="$TTS_MODEL_DIR" TTS_MODEL_REVISION="$TTS_MODEL_REVISION" \

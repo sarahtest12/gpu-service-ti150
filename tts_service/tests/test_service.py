@@ -42,7 +42,7 @@ class ServiceConfigurationTest(unittest.TestCase):
             path.write_bytes(("model:" + name).encode())
         for name in (
             "cosyvoice/cli/cosyvoice.py", "cosyvoice/cli/frontend.py",
-            "cosyvoice/cli/model.py",
+            "cosyvoice/cli/model.py", "cosyvoice/hifigan/generator.py",
         ):
             path = self.source / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -51,7 +51,7 @@ class ServiceConfigurationTest(unittest.TestCase):
         self.prompt.write_bytes(b"RIFF-fixed-voice")
         self.manifest.write_text(json.dumps({
             "voice_id": "aishell3-female",
-            "prompt_text": "大家都在琢磨如何在产品差异和服务上下更多功夫",
+            "prompt_text": "You are a helpful assistant.<|endofprompt|>大家都在琢磨如何在产品差异和服务上下更多功夫",
             "dataset": {
                 "repository": "AISHELL/AISHELL-3",
                 "revision": "f20d5db4a31fe779ef07bb1af4ea92da5c786622",
@@ -88,7 +88,7 @@ class ServiceConfigurationTest(unittest.TestCase):
             "source_checksums": {
                 name: digest(self.source / name)
                 for name in ("cosyvoice/cli/cosyvoice.py", "cosyvoice/cli/frontend.py",
-                             "cosyvoice/cli/model.py")
+                             "cosyvoice/cli/model.py", "cosyvoice/hifigan/generator.py")
             },
             "voice_manifest": str(self.manifest),
             "prompt_wav": str(self.prompt),
@@ -124,7 +124,7 @@ class ServiceConfigurationTest(unittest.TestCase):
         self.assertEqual(cfg["sample_rate_hz"], 24000)
         self.assertEqual(cfg["voice_id"], "aishell3-female")
         self.assertEqual(cfg["prompt_text"],
-                         "大家都在琢磨如何在产品差异和服务上下更多功夫")
+                         "You are a helpful assistant.<|endofprompt|>大家都在琢磨如何在产品差异和服务上下更多功夫")
         self.assertFalse(cfg["load_vllm"])
         self.assertFalse(cfg["load_trt"])
 
@@ -156,6 +156,13 @@ class ServiceConfigurationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "mismatch"):
                     self.load()
                 path.write_bytes(original)
+
+    def test_rejects_cosyvoice3_prompt_without_endofprompt(self):
+        manifest = json.loads(self.manifest.read_text())
+        manifest["prompt_text"] = manifest["dataset"]["utterances"][0]["transcript"]
+        self.manifest.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "prompt text"):
+            self.load()
 
     def test_runtime_prefers_pinned_venv_packages_before_corex_packages(self):
         with patch.object(service, "ROOT", ROOT):

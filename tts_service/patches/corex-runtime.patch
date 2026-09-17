@@ -1,0 +1,63 @@
+diff --git a/cosyvoice/cli/frontend.py b/cosyvoice/cli/frontend.py
+index 6d397cc..6ce258d 100644
+--- a/cosyvoice/cli/frontend.py
++++ b/cosyvoice/cli/frontend.py
+@@ -44,8 +44,7 @@ class CosyVoiceFrontEnd:
+         option.intra_op_num_threads = 1
+         self.campplus_session = onnxruntime.InferenceSession(campplus_model, sess_options=option, providers=["CPUExecutionProvider"])
+         self.speech_tokenizer_session = onnxruntime.InferenceSession(speech_tokenizer_model, sess_options=option,
+-                                                                     providers=["CUDAExecutionProvider" if torch.cuda.is_available() else
+-                                                                                "CPUExecutionProvider"])
++                                                                     providers=["CPUExecutionProvider"])
+         if os.path.exists(spk2info):
+             self.spk2info = torch.load(spk2info, map_location=self.device, weights_only=True)
+         else:
+diff --git a/cosyvoice/cli/model.py b/cosyvoice/cli/model.py
+index 92a15d9..d669dec 100644
+--- a/cosyvoice/cli/model.py
++++ b/cosyvoice/cli/model.py
+@@ -342,10 +342,14 @@ class CosyVoice2Model(CosyVoiceModel):
+         p.start()
+         if stream is True:
+             token_offset = 0
+-            prompt_token_pad = int(np.ceil(flow_prompt_speech_token.shape[1] / self.token_hop_len) * self.token_hop_len - flow_prompt_speech_token.shape[1])
++            # Stream hop growth is request-local. Persisting it on the model makes
++            # later utterances on a reusable session wait for progressively more
++            # tokens before their first audio chunk.
++            token_hop_len = self.token_hop_len
++            prompt_token_pad = int(np.ceil(flow_prompt_speech_token.shape[1] / token_hop_len) * token_hop_len - flow_prompt_speech_token.shape[1])
+             while True:
+                 time.sleep(0.1)
+-                this_token_hop_len = self.token_hop_len + prompt_token_pad if token_offset == 0 else self.token_hop_len
++                this_token_hop_len = token_hop_len + prompt_token_pad if token_offset == 0 else token_hop_len
+                 if len(self.tts_speech_token_dict[this_uuid]) - token_offset >= this_token_hop_len + self.flow.pre_lookahead_len:
+                     this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid][:token_offset + this_token_hop_len + self.flow.pre_lookahead_len]).unsqueeze(dim=0)
+                     this_tts_speech = self.token2wav(token=this_tts_speech_token,
+@@ -357,7 +361,7 @@ class CosyVoice2Model(CosyVoiceModel):
+                                                      stream=stream,
+                                                      finalize=False)
+                     token_offset += this_token_hop_len
+-                    self.token_hop_len = min(self.token_max_hop_len, self.token_hop_len * self.stream_scale_factor)
++                    token_hop_len = min(self.token_max_hop_len, token_hop_len * self.stream_scale_factor)
+                     yield {'tts_speech': this_tts_speech.cpu()}
+                 if self.llm_end_dict[this_uuid] is True and len(self.tts_speech_token_dict[this_uuid]) - token_offset < this_token_hop_len + self.flow.pre_lookahead_len:
+                     break
+diff --git a/cosyvoice/hifigan/generator.py b/cosyvoice/hifigan/generator.py
+index bbc2a21..b0b9df1 100644
+--- a/cosyvoice/hifigan/generator.py
++++ b/cosyvoice/hifigan/generator.py
+@@ -712,9 +712,11 @@ class CausalHiFTGenerator(HiFTGenerator):
+ 
+     @torch.inference_mode()
+     def inference(self, speech_feat: torch.Tensor, finalize: bool = True) -> torch.Tensor:
+-        # mel->f0 NOTE f0_predictor precision is crucial for causal inference, move self.f0_predictor to cpu if necessary
+-        self.f0_predictor.to(torch.float64)
+-        f0 = self.f0_predictor(speech_feat.to(torch.float64), finalize=finalize).to(speech_feat)
++        # mel->f0 NOTE f0_predictor precision is crucial for causal inference.
++        # CoreX IXDNN rejects float64 Conv1d, so retain float64 precision on CPU.
++        self.f0_predictor.to(device='cpu', dtype=torch.float64)
++        f0 = self.f0_predictor(speech_feat.to(device='cpu', dtype=torch.float64),
++                               finalize=finalize).to(speech_feat)
+         # f0->source
+         s = self.f0_upsamp(f0[:, None]).transpose(1, 2)  # bs,n,t
+         s, _, _ = self.m_source(s)

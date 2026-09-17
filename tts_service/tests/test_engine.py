@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 import threading
 import time
+from types import GeneratorType
 import unittest
 
 import numpy as np
@@ -136,7 +137,8 @@ class CosyVoice3EngineTest(unittest.TestCase):
 
         self.assertEqual(np.frombuffer(b"".join(chunks), dtype="<i2").tolist(),
                          [-32767, 0, 32767, 8192])
-        _, prompt_text, prompt_wav, voice, stream, speed = self.model.calls[0]
+        text_input, prompt_text, prompt_wav, voice, stream, speed = self.model.calls[0]
+        self.assertIsInstance(text_input, GeneratorType)
         self.assertEqual(prompt_text, "固定参考音频的准确文本。")
         self.assertEqual(prompt_wav, "/tmp/aishell3-female.wav")
         self.assertEqual((voice, stream, speed), ("aishell3-female", True, 1.0))

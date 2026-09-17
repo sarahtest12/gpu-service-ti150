@@ -15,7 +15,8 @@
   "source_checksums": {
     "cosyvoice/cli/cosyvoice.py": "4b2a605f129d172cd031286a14a591396c2e8ed0bf53258acc7445525fdaa65b",
     "cosyvoice/cli/frontend.py": "b291fd5314439f571d0c1fee4d7c2c53bff13c2ecb4dc08c35e4804c4fa33abf",
-    "cosyvoice/cli/model.py": "421ba52dd956505667668e0aec7fdcbcd85d733b52725b2d595bc32bcbb53ef9"
+    "cosyvoice/cli/model.py": "73f9d1439de7147e5d615ae88b18233fb73eb87aaae954fe5054c5cbb5cf0a6d",
+    "cosyvoice/hifigan/generator.py": "7352af65692bfd2a4e557dd198eff893ff8137ca42178bd5fbac2d9394fb3e49"
   },
   "voice_manifest": "/mnt/mbwang/myproj/gpu-service-ti150/tts_service/assets/voices/aishell3-female.json",
   "prompt_wav": "/mnt/mbwang/myproj/gpu-service-ti150/tts_service/runtime/voices/aishell3-female/reference.wav",

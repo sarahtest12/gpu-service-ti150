@@ -1,6 +1,6 @@
 {
   "voice_id": "aishell3-female",
-  "prompt_text": "大家都在琢磨如何在产品差异和服务上下更多功夫",
+  "prompt_text": "You are a helpful assistant.<|endofprompt|>大家都在琢磨如何在产品差异和服务上下更多功夫",
   "dataset": {
     "repository": "AISHELL/AISHELL-3",
     "revision": "f20d5db4a31fe779ef07bb1af4ea92da5c786622",

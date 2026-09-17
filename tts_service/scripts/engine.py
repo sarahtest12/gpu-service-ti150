@@ -150,7 +150,7 @@ class CosyVoice3Engine:
             self._measure_first_token = True
         try:
             output = self.model.inference_zero_shot(
-                text_stream,
+                iter(text_stream),
                 self.cfg["prompt_text"],
                 self.cfg["prompt_wav"],
                 zero_shot_spk_id=self.cfg["voice_id"],

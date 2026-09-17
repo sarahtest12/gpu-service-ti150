@@ -38,13 +38,13 @@ EXPECTED = {
     "diffusers": "0.29.0",
     "openai-whisper": "20231117",
     "inflect": "7.3.1",
-    "WeTextProcessing": "1.0.3",
     "omegaconf": "2.3.0",
     "ruamel.yaml": "0.17.40",
     "hydra-core": "1.3.2",
     "lightning": "2.2.4",
     "gdown": "5.1.0",
     "wget": "3.2",
+    "pyworld": "0.3.4",
 }
 
 
@@ -102,6 +102,11 @@ def read_voice_manifest(cfg, *, require_audio):
                 or item["trim_start_sample"] < 0
                 or item["trim_end_sample"] <= item["trim_start_sample"]):
             raise ValueError("invalid voice utterance manifest")
+    expected_prompt = "You are a helpful assistant.<|endofprompt|>" + "".join(
+        item.get("transcript", "") for item in utterances
+    )
+    if prompt_text != expected_prompt:
+        raise ValueError("fixed voice prompt text must include the CosyVoice3 endofprompt prefix")
     derived = manifest.get("derived", {})
     if (derived.get("sample_rate_hz") != cfg["sample_rate_hz"]
             or derived.get("channels") != 1
