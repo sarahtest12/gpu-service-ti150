@@ -63,6 +63,7 @@ class GatewayTest(unittest.TestCase):
         self.http_requests = []
         self.grpc_metadata = []
         self.asr_headers = []
+        self.tts_headers = []
         self.tts_started = threading.Event()
         self.tts_pause = False
         self.stream_mode = "normal"
@@ -85,9 +86,6 @@ class GatewayTest(unittest.TestCase):
                          "latency": {"metric": "model_inference", "avg_ms": 12.0,
                                      "p95_ms": 18.0}}
                     ]}
-                elif self.path == "/v1/audio/voices":
-                    value = {"object": "list", "data": [{"id": "中文女", "object": "voice",
-                                                            "language": "Chinese"}]}
                 elif self.path == "/health":
                     value = {"status": "ok"}
                 else:
@@ -104,25 +102,6 @@ class GatewayTest(unittest.TestCase):
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 fixture.http_requests.append((self.path, dict(self.headers), body))
-                if self.path == "/v1/audio/speech":
-                    fixture.tts_started.set()
-                    self.send_response(200)
-                    self.send_header("Content-Type", "audio/pcm")
-                    self.send_header("X-Audio-Format", "pcm_s16le")
-                    self.send_header("X-Audio-Sample-Rate", "22050")
-                    self.send_header("X-Audio-Channels", "1")
-                    self.send_header("X-Accel-Buffering", "yes")
-                    self.end_headers()
-                    try:
-                        self.wfile.write(b"\x01\x00\x02\x00")
-                        self.wfile.flush()
-                        if fixture.tts_pause:
-                            fixture.release.wait(4)
-                        self.wfile.write(b"\x03\x00\x04\x00")
-                        self.wfile.flush()
-                    except (BrokenPipeError, ConnectionResetError, TimeoutError):
-                        pass
-                    return
                 if self.path == "/v1/embeddings":
                     fixture.rag_started.set()
                     if fixture.rag_pause:
@@ -217,6 +196,42 @@ class GatewayTest(unittest.TestCase):
         self.asr_thread.start()
         self.addCleanup(self.close_asr)
 
+        def tts_process_request(connection, request):
+            fixture.tts_headers.append(dict(request.headers))
+            expected = "Bearer " + secret(fixture.cfg["tts"]["api_key_file"])
+            if request.headers.get("Authorization") != expected:
+                return connection.respond(HTTPStatus.UNAUTHORIZED, "unauthorized\n")
+            if request.path != "/realtime":
+                return connection.respond(HTTPStatus.NOT_FOUND, "not found\n")
+            return None
+
+        def tts_handler(connection):
+            connection.send(json.dumps({"type": "session.created", "voice": "aishell3-female",
+                                        "audio": {"format": "pcm_s16le", "sample_rate_hz": 24000,
+                                                  "channels": 1}}))
+            for message in connection:
+                event = json.loads(message)
+                if event["type"] == "input.text":
+                    fixture.tts_started.set()
+                    connection.send(json.dumps({"type": "audio.start", "utterance_id": "utt-1"}))
+                    connection.send(b"\x01\x00\x02\x00")
+                elif event["type"] == "input.done":
+                    if fixture.tts_pause:
+                        fixture.release.wait(4)
+                    connection.send(b"\x03\x00\x04\x00")
+                    connection.send(json.dumps({"type": "audio.done", "utterance_id": "utt-1"}))
+
+        self.tts_socket = socket.socket()
+        self.tts_socket.bind(("127.0.0.1", 0))
+        self.tts_socket.listen()
+        self.tts_port = self.tts_socket.getsockname()[1]
+        self.tts_server = websocket_serve(tts_handler, sock=self.tts_socket,
+                                          process_request=tts_process_request,
+                                          compression=None, server_header=None)
+        self.tts_thread = threading.Thread(target=self.tts_server.serve_forever, daemon=True)
+        self.tts_thread.start()
+        self.addCleanup(self.close_tts)
+
         class DetectorFixture(detector_pb2_grpc.DetectorServicer):
             def Detect(self, requests, context):
                 metadata = dict(context.invocation_metadata())
@@ -251,8 +266,8 @@ class GatewayTest(unittest.TestCase):
             "asr": {"address": f"127.0.0.1:{self.asr_port}",
                     "api_key_file": self.root / "asr_key",
                     "max_connections": 1, "read_timeout_seconds": 2},
-            "tts": {"address": f"127.0.0.1:{self.http_server.server_port}",
-                    "api_key_file": self.root / "tts_key", "max_body_bytes": 512,
+            "tts": {"address": f"127.0.0.1:{self.tts_port}",
+                    "api_key_file": self.root / "tts_key",
                     "max_connections": 1, "read_timeout_seconds": 2},
             "monitor": {"address": f"127.0.0.1:{self.http_server.server_port}",
                         "api_key_file": self.root / "monitor_key",
@@ -305,6 +320,10 @@ class GatewayTest(unittest.TestCase):
         self.asr_server.shutdown()
         self.asr_thread.join(timeout=2)
 
+    def close_tts(self):
+        self.tts_server.shutdown()
+        self.tts_thread.join(timeout=2)
+
     def detector(self, token=None, trusted=True):
         return DetectorClient(f"localhost:{self.port}", token=self.key if token is None else token,
                               tls=True, root_certificates=self.cert.read_bytes() if trusted else None,
@@ -321,6 +340,15 @@ class GatewayTest(unittest.TestCase):
         context = ssl.create_default_context(cafile=str(self.cert))
         return websocket_connect(
             self.url.replace("https://", "wss://") + "/asr/v1/realtime",
+            ssl=context, additional_headers={"Authorization": "Bearer " +
+                                             (self.key if token is None else token)},
+            proxy=None, compression=None, open_timeout=2,
+        )
+
+    def tts(self, token=None):
+        context = ssl.create_default_context(cafile=str(self.cert))
+        return websocket_connect(
+            self.url.replace("https://", "wss://") + "/tts/v1/realtime",
             ssl=context, additional_headers={"Authorization": "Bearer " +
                                              (self.key if token is None else token)},
             proxy=None, compression=None, open_timeout=2,
@@ -482,32 +510,38 @@ class GatewayTest(unittest.TestCase):
                 pass
         self.assertEqual(caught.exception.response.status_code, 401)
 
-    def test_tts_streams_pcm_and_replaces_the_public_credential(self):
-        payload = {"model": "cosyvoice-300m-instruct", "input": "测试", "voice": "中文女",
-                   "instructions": "自然播报", "response_format": "pcm", "stream": True, "speed": 1.0}
+    def test_tts_websocket_uses_own_key_and_streams_binary(self):
+        with self.assertRaises(InvalidStatus) as caught:
+            with self.tts(token="wrong"):
+                pass
+        self.assertEqual(caught.exception.response.status_code, 401)
         self.tts_pause = True
-        with self.http.stream("POST", "/tts/v1/audio/speech", json=payload) as response:
-            self.assertEqual(response.status_code, 200)
-            self.assertEqual(response.headers["X-Audio-Format"], "pcm_s16le")
-            chunks = response.iter_raw()
-            first = next(chunks)
-            self.assertEqual(first, b"\x01\x00\x02\x00")
+        with self.tts() as connection:
+            session = json.loads(connection.recv())
+            self.assertEqual(session["voice"], "aishell3-female")
+            self.assertEqual(session["audio"]["sample_rate_hz"], 24000)
+            connection.send(json.dumps({"type": "input.text", "text": "测试"}))
+            self.assertEqual(json.loads(connection.recv())["type"], "audio.start")
+            self.assertEqual(connection.recv(), b"\x01\x00\x02\x00")
             self.assertTrue(self.tts_started.is_set())
-            self.assertEqual(self.http.post("/tts/v1/audio/speech", json=payload).status_code, 429)
+            with self.assertRaises(InvalidStatus) as limited:
+                with self.tts():
+                    pass
+            self.assertEqual(limited.exception.response.status_code, 429)
             self.assertEqual(self.http.get("/vlm/v1/models").status_code, 200)
+            connection.send(json.dumps({"type": "input.done"}))
             self.release.set()
-            self.assertEqual(b"".join(chunks), b"\x03\x00\x04\x00")
-        path, headers, body = next(item for item in reversed(self.http_requests)
-                                   if item[0] == "/v1/audio/speech")
-        self.assertEqual((path, body), ("/v1/audio/speech", payload))
+            self.assertEqual(connection.recv(), b"\x03\x00\x04\x00")
+            self.assertEqual(json.loads(connection.recv())["type"], "audio.done")
         expected = "Bearer " + secret(self.cfg["tts"]["api_key_file"])
-        self.assertEqual(headers["Authorization"], expected)
+        upstream_authorization = next(
+            value for name, value in self.tts_headers[-1].items()
+            if name.lower() == "authorization"
+        )
+        self.assertEqual(upstream_authorization, expected)
         self.assertNotEqual(expected, "Bearer " + self.key)
-        self.assertEqual(self.http.get("/tts/health/ready").json(), {"status": "ok"})
-        voices = self.http.get("/tts/v1/audio/voices").json()
-        self.assertEqual(voices["data"][0]["id"], "中文女")
-        self.assertEqual(self.http.get("/tts/v1/audio/speech").status_code, 403)
-        self.assertEqual(self.http.post("/tts/v1/audio/speech", content=b"x" * 513).status_code, 413)
+        for path in ("/tts/v1/audio/speech", "/tts/v1/audio/voices", "/tts/health/ready"):
+            self.assertEqual(self.http.get(path).status_code, 404)
 
     def test_monitor_snapshot_forwards_refresh_and_replaces_public_credential(self):
         response = self.http.get("/monitor/v1/overview?refresh=true")

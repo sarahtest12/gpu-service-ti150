@@ -47,8 +47,6 @@ def load(path):
     positive(cfg["vlm"], "max_body_bytes", 1024 * 1024 * 1024)
     if "rag" in cfg:
         positive(cfg["rag"], "max_body_bytes", 1024 * 1024 * 1024)
-    if "tts" in cfg:
-        positive(cfg["tts"], "max_body_bytes", 1024 * 1024 * 1024)
     address(cfg["yolo"]["health_address"])
     cfg["yolo"]["weights"] = (path.parent / cfg["yolo"]["weights"]).resolve()
     if not re.fullmatch(r"[0-9a-f]{64}", cfg["yolo"]["weights_sha256"]):
@@ -138,33 +136,17 @@ def render(cfg, runtime):
         keys.append(tts_key)
         tts_zone = "limit_conn_zone $server_name zone=tts_slots:32k;"
         tts_locations = f"""
-        location = /tts/v1/audio/speech {{
-            limit_except POST {{ deny all; }}
+        location = /tts/v1/realtime {{
+            limit_except GET {{ deny all; }}
             limit_conn tts_slots {tts['max_connections']};
-            client_max_body_size {tts['max_body_bytes']};
             proxy_set_header Authorization {quoted('Bearer ' + tts_key)};
-            proxy_set_header Connection "";
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
             proxy_set_header X-Request-ID $request_id;
             proxy_read_timeout {tts['read_timeout_seconds']}s;
             proxy_send_timeout {tts['read_timeout_seconds']}s;
             proxy_buffering off;
-            proxy_pass http://{tts['address']}/v1/audio/speech;
-        }}
-        location = /tts/v1/audio/voices {{
-            limit_except GET {{ deny all; }}
-            proxy_set_header Authorization {quoted('Bearer ' + tts_key)};
-            proxy_set_header Connection "";
-            proxy_set_header X-Request-ID $request_id;
-            proxy_read_timeout 3s;
-            proxy_pass http://{tts['address']}/v1/audio/voices;
-        }}
-        location = /tts/health/ready {{
-            limit_except GET {{ deny all; }}
-            proxy_set_header Authorization {quoted('Bearer ' + tts_key)};
-            proxy_set_header Connection "";
-            proxy_set_header X-Request-ID $request_id;
-            proxy_read_timeout 3s;
-            proxy_pass http://{tts['address']}/health;
+            proxy_pass http://{tts['address']}/realtime;
         }}
 """
     monitor_locations, monitor_zone = "", ""

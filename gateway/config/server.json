@@ -28,9 +28,8 @@
   "tts": {
     "address": "127.0.0.1:8004",
     "api_key_file": "../../tts_service/runtime/api_key",
-    "max_body_bytes": 16384,
     "max_connections": 1,
-    "read_timeout_seconds": 600
+    "read_timeout_seconds": 3600
   },
   "monitor": {
     "address": "127.0.0.1:8005",
