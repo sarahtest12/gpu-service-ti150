@@ -5,7 +5,9 @@ import logging
 from pathlib import Path
 import sys
 import threading
+import tempfile
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 from fastapi.testclient import TestClient
@@ -16,7 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from engine import CosyVoice3Engine
-from server import VendorPayloadFilter, create_app
+from server import VendorPayloadFilter, create_app, load_runtime_config
 
 
 class Tensor:
@@ -105,6 +107,16 @@ class TtsServerTest(unittest.TestCase):
         event = websocket.receive_json()
         self.assertEqual(event["type"], "audio.done")
         return event
+
+    def test_runtime_config_loads_validated_prompt_text_from_voice_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "server.json"
+            path.write_text(json.dumps({"voice_manifest": "/fixed/voice.json"}))
+            with patch("service.read_voice_manifest",
+                       return_value={"prompt_text": "validated fixed prompt"}) as read_manifest:
+                cfg = load_runtime_config(path)
+        self.assertEqual(cfg["prompt_text"], "validated fixed prompt")
+        read_manifest.assert_called_once_with(cfg, require_audio=True)
 
     def test_auth_internal_health_metrics_and_removed_http_business_routes(self):
         self.assertEqual(self.client.get("/health").status_code, 401)

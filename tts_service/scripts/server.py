@@ -295,6 +295,17 @@ def load_engine(cfg):
     return CosyVoice3Engine(model, cfg)
 
 
+def load_runtime_config(path):
+    """Load JSON plus the fixed prompt derived by the provisioning validator."""
+    import service
+
+    cfg = json.loads(path.read_text())
+    cfg["prompt_text"] = service.read_voice_manifest(
+        cfg, require_audio=True,
+    )["prompt_text"]
+    return cfg
+
+
 def create_app(engine, cfg, token):
     app = FastAPI(title="CosyVoice3 TTS internal service", version="2.0",
                   docs_url=None, redoc_url=None, openapi_url=None)
@@ -342,7 +353,7 @@ def main():
     parser.add_argument("--key-file", type=Path, required=True)
     args = parser.parse_args()
     configure_logging()
-    cfg = json.loads(args.config.read_text())
+    cfg = load_runtime_config(args.config)
     token = args.key_file.read_text().strip()
     engine = load_engine(cfg)
     LOG.info("TTS ready on ws://%s:%d/realtime", cfg["host"], cfg["port"])
