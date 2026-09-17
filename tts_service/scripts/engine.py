@@ -38,6 +38,7 @@ class TextStream:
         self._items = deque()
         self._finished = False
         self._cancelled = False
+        self._waiting_seconds = 0.0
         self._condition = threading.Condition()
 
     def append(self, text, timeout=None):
@@ -75,11 +76,18 @@ class TextStream:
         with self._condition:
             return self._cancelled
 
+    @property
+    def waiting_seconds(self):
+        with self._condition:
+            return self._waiting_seconds
+
     def __iter__(self):
         while True:
             with self._condition:
                 while not self._items and not self._finished:
+                    started_waiting = time.perf_counter()
                     self._condition.wait()
+                    self._waiting_seconds += time.perf_counter() - started_waiting
                 if self._cancelled:
                     return
                 if self._items:
@@ -99,6 +107,7 @@ class CosyVoice3Engine:
         self._slots = threading.BoundedSemaphore(cfg["max_concurrency"])
         self._metric_lock = threading.Lock()
         self._measure_first_token = False
+        self._metric_stream = None
         self._instrument_token_decoder()
 
     def _instrument_token_decoder(self):
@@ -111,11 +120,18 @@ class CosyVoice3Engine:
         @functools.wraps(original)
         def measured_inference(*args, **kwargs):
             started = time.perf_counter()
+            with self._metric_lock:
+                stream = self._metric_stream
+            waiting_at_start = stream.waiting_seconds if stream is not None else 0.0
             first = True
             for token in original(*args, **kwargs):
                 if first:
                     first = False
-                    self._observe_first_token(time.perf_counter() - started)
+                    waiting = ((stream.waiting_seconds - waiting_at_start)
+                               if stream is not None else 0.0)
+                    self._observe_first_token(
+                        max(0.0, time.perf_counter() - started - waiting),
+                    )
                 yield token
 
         measured_inference._tts_ttft_instrumented = True
@@ -148,6 +164,7 @@ class CosyVoice3Engine:
         output = None
         with self._metric_lock:
             self._measure_first_token = True
+            self._metric_stream = text_stream
         try:
             output = self.model.inference_zero_shot(
                 iter(text_stream),
@@ -174,3 +191,4 @@ class CosyVoice3Engine:
                     )
             with self._metric_lock:
                 self._measure_first_token = False
+                self._metric_stream = None

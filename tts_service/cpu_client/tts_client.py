@@ -34,13 +34,16 @@ class TtsRealtimeClient:
         self.context = ssl.create_default_context(
             cafile=str(Path(ca_file)) if ca_file is not None else None,
         )
+        self._state_lock = threading.Lock()
         self._connection = None
-        self._active = False
+        self._active_token = None
         self.session = None
 
     def connect(self):
-        if self._connection is not None:
-            raise RuntimeError("TTS client is already connected")
+        with self._state_lock:
+            if self._connection is not None:
+                raise RuntimeError("TTS client is already connected")
+        connection = None
         try:
             connection = websocket_connect(
                 self.url,
@@ -51,42 +54,55 @@ class TtsRealtimeClient:
                 compression=None,
                 proxy=None,
             )
-            self._connection = connection
-            event = self._receive_event()
+            with self._state_lock:
+                if self._connection is not None:
+                    connection.close()
+                    raise RuntimeError("TTS client is already connected")
+                self._connection = connection
+            event = self._receive_event(connection)
             expected_audio = {"format": "pcm_s16le", "sample_rate_hz": 24000, "channels": 1}
             if (event.get("type") != "session.created"
+                    or event.get("model") != "fun-cosyvoice3-0.5b-2512"
+                    or event.get("voice") != "aishell3-female"
                     or event.get("audio") != expected_audio
                     or not isinstance(event.get("session_id"), str)
                     or not event["session_id"]):
-                raise RuntimeError("TTS returned unsupported audio metadata or session response")
+                raise RuntimeError("TTS returned unsupported model, voice or audio metadata")
             self.session = event
             return self
         except InvalidStatus as error:
-            self._disconnect()
+            if connection is not None:
+                self._disconnect(connection)
             raise RuntimeError(
                 f"TTS WebSocket HTTP {error.response.status_code}; check endpoint and token"
             ) from None
         except TimeoutError:
-            self._disconnect()
+            if connection is not None:
+                self._disconnect(connection)
             raise RuntimeError("TTS connection timed out; check endpoint and server load") from None
         except (ConnectionClosed, OSError, ssl.SSLError):
-            self._disconnect()
+            if connection is not None:
+                self._disconnect(connection)
             raise RuntimeError("TTS connection failed; check endpoint and network access") from None
         except Exception:
-            self._disconnect()
+            if connection is not None:
+                self._disconnect(connection)
             raise
 
     def synthesize(self, text_chunks):
         """Yield 24 kHz mono PCM S16LE while text chunks are still arriving."""
-        if self._connection is None:
-            raise RuntimeError("TTS client is not connected")
-        if self._active:
-            raise RuntimeError("a TTS utterance is already active on this connection")
-
         def generate():
-            self._active = True
+            token = object()
+            with self._state_lock:
+                connection = self._connection
+                if connection is None:
+                    raise RuntimeError("TTS client is not connected")
+                if self._active_token is not None:
+                    raise RuntimeError("a TTS utterance is already active on this connection")
+                self._active_token = token
             sender_errors = []
             sender = None
+            completed = False
             try:
                 try:
                     iterator = iter(text_chunks)
@@ -99,15 +115,16 @@ class TtsRealtimeClient:
 
                 def send_text():
                     try:
-                        self._send_text(first)
+                        self._send_text(connection, first)
                         for value in iterator:
-                            self._send_text(self._validate_text(value))
-                        self._connection.send(json.dumps({"type": "input.done"}))
+                            self._send_text(connection, self._validate_text(value))
+                        connection.send(json.dumps({"type": "input.done"}))
                     except Exception as error:
                         sender_errors.append(error)
-                        connection = self._connection
-                        if connection is not None:
+                        try:
                             connection.close()
+                        except (ConnectionClosed, OSError):
+                            pass
 
                 sender = threading.Thread(target=send_text, name="tts-text-sender", daemon=True)
                 sender.start()
@@ -115,7 +132,7 @@ class TtsRealtimeClient:
                 utterance_id = None
                 while True:
                     try:
-                        message = self._connection.recv(timeout=self.timeout_seconds)
+                        message = connection.recv(timeout=self.timeout_seconds)
                     except TimeoutError:
                         raise RuntimeError("TTS response timed out; check server load or timeout_seconds") from None
                     except ConnectionClosed:
@@ -145,30 +162,37 @@ class TtsRealtimeClient:
                             raise RuntimeError("TTS text sender did not finish")
                         if sender_errors:
                             raise sender_errors[0]
+                        completed = True
                         return
                     raise RuntimeError("TTS returned an unexpected event sequence")
             except (ValueError, RuntimeError):
-                self._disconnect()
+                self._disconnect(connection)
                 raise
             except (OSError, ssl.SSLError):
-                self._disconnect()
+                self._disconnect(connection)
                 raise RuntimeError("TTS connection failed during synthesis") from None
             finally:
-                self._active = False
+                if not completed:
+                    self._disconnect(connection)
+                with self._state_lock:
+                    if self._active_token is token:
+                        self._active_token = None
 
         return generate()
 
     def close(self):
-        connection = self._connection
+        with self._state_lock:
+            connection = self._connection
+            active = self._active_token is not None
         if connection is None:
             return
         try:
-            if not self._active:
+            if not active:
                 connection.send(json.dumps({"type": "session.close"}))
         except (ConnectionClosed, OSError):
             pass
         finally:
-            self._disconnect()
+            self._disconnect(connection)
 
     def __enter__(self):
         return self.connect()
@@ -176,12 +200,13 @@ class TtsRealtimeClient:
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
-    def _send_text(self, text):
-        self._connection.send(json.dumps({"type": "input.text", "text": text}, ensure_ascii=False))
+    @staticmethod
+    def _send_text(connection, text):
+        connection.send(json.dumps({"type": "input.text", "text": text}, ensure_ascii=False))
 
-    def _receive_event(self):
+    def _receive_event(self, connection):
         try:
-            message = self._connection.recv(timeout=self.timeout_seconds)
+            message = connection.recv(timeout=self.timeout_seconds)
         except TimeoutError:
             raise RuntimeError("TTS response timed out; check server load or timeout_seconds") from None
         if not isinstance(message, str):
@@ -204,9 +229,16 @@ class TtsRealtimeClient:
             raise ValueError("each text chunk must be a non-empty string")
         return value
 
-    def _disconnect(self):
-        connection, self._connection = self._connection, None
-        self.session = None
+    def _disconnect(self, expected=None):
+        with self._state_lock:
+            if expected is None:
+                connection, self._connection = self._connection, None
+                self.session = None
+            elif self._connection is expected:
+                connection, self._connection = self._connection, None
+                self.session = None
+            else:
+                connection = expected
         if connection is not None:
             try:
                 connection.close()

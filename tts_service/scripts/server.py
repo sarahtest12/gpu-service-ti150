@@ -178,8 +178,6 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
                         text_stream.finish()
                     else:
                         if total_characters + len(text) > cfg["max_utterance_characters"]:
-                            input_done = True
-                            text_stream.finish()
                             raise ProtocolError(
                                 "input_too_long", "utterance exceeds the character limit",
                             )
@@ -194,9 +192,11 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
                         protocol_error = ProtocolError(
                             "input_backpressure", "text input queue is not accepting data",
                         )
-                    await websocket.send_json(error_event(protocol_error))
                     if protocol_error.fatal:
                         raise protocol_error
+                    await websocket.send_json(error_event(protocol_error))
+                    text_stream.cancel()
+                    return
                 receive_task = asyncio.create_task(
                     receive_message(
                         websocket, cfg,
@@ -265,18 +265,23 @@ async def serve_session(websocket, engine, cfg, request_id, session_id):
         except EOFError:
             return
         except ProtocolError as error:
-            if error.code != "inference_failed":
-                await websocket.send_json(error_event(error))
-            else:
-                await websocket.send_json(error_event(error))
+            await websocket.send_json(error_event(error))
             await websocket.close(code=1011, reason=error.code)
             return
+
+
+def validate_loaded_model(model):
+    if (model.fp16 is not True or model.model.fp16 is not True
+            or model.model.device.type != "cuda"):
+        raise RuntimeError("CosyVoice3 did not load on the GPU FP16 path")
 
 
 def load_engine(cfg):
     import torch
     from cosyvoice.cli.cosyvoice import AutoModel
 
+    if not torch.cuda.is_available() or torch.cuda.device_count() != 1:
+        raise RuntimeError("TTS requires exactly one visible CoreX GPU")
     torch.backends.cuda.enable_mem_efficient_sdp(False)
     torch.backends.cuda.enable_flash_sdp(False)
     torch.backends.cuda.enable_math_sdp(True)
@@ -286,6 +291,7 @@ def load_engine(cfg):
         load_trt=cfg["load_trt"],
         fp16=cfg["fp16"],
     )
+    validate_loaded_model(model)
     if model.sample_rate != cfg["sample_rate_hz"]:
         raise RuntimeError("configured sample rate does not match CosyVoice3")
     if not model.add_zero_shot_spk(
@@ -300,6 +306,7 @@ def load_runtime_config(path):
     import service
 
     cfg = json.loads(path.read_text())
+    service.resolve_config_paths(cfg, path)
     cfg["prompt_text"] = service.read_voice_manifest(
         cfg, require_audio=True,
     )["prompt_text"]

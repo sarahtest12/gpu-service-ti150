@@ -19,16 +19,22 @@ FastAPI/Uvicorn 只监听 `127.0.0.1:8004`，NGINX 通过统一端口公开
 | 单文本块 / utterance | 最多 1024 / 4096 个 Unicode 字符 |
 | 超时 | 活跃输入 300 秒；空闲会话 3600 秒 |
 | 并发 | 1 个活跃 WebSocket |
+| 启动显存门禁 | GPU 0 至少保留 6000 MiB 可用显存 |
 
-模型、官方源码、关键文件 SHA-256 和源码 revision 均由启动检查固定。独立 `.venv` 优先加载已固定
-的 CosyVoice 前端依赖，再从 CoreX 加载厂商 torch/torchaudio；不安装通用 PyTorch、CUDA、
+模型、官方源码、12 个运行所需模型文件的 SHA-256 和源码 revision 均由启动检查固定。
+[`requirements.lock`](requirements.lock) 与 [`requirements-build.lock`](requirements-build.lock)
+固定服务自带依赖的版本和安装包 SHA-256，bootstrap 以 `--require-hashes --no-deps` 安装，不在部署时
+重新解析传递依赖。独立 `.venv` 优先加载这些包，再从 CoreX 基础镜像加载厂商 torch/torchaudio；
+不安装通用 PyTorch、CUDA、
 `onnxruntime-gpu`、vLLM 或 TensorRT。语音 tokenizer 的 ONNX 会话明确使用 CPU provider，TTS
-主模型在 GPU 执行。
+主模型在 GPU 执行。启动检查会实际分配一个 CUDA FP16 tensor，模型加载后再次确认内部设备和
+FP16 标志。
 
 固定参考音色来自 AISHELL-3 的 Apache-2.0 女声 SSB0005。来源 revision、原始文件哈希、裁剪点、
 文本和派生 24 kHz WAV 哈希记录在
 [`assets/voices/aishell3-female.json`](assets/voices/aishell3-female.json)。客户端不能上传参考音频、
-选择其他音色或调整速度。
+选择其他音色或调整速度。启动时还会检查 WAV 编码、时长、峰值、首尾静音和边缘噪声，避免被
+替换为虽有匹配元数据但不适合作为参考音色的音频。
 
 ## 准备与管理
 

@@ -127,6 +127,15 @@ class CosyVoice3EngineTest(unittest.TestCase):
             if sample.name == "tts_time_to_first_token_seconds_count"
         )
 
+    @staticmethod
+    def metric_sum():
+        return next(
+            sample.value
+            for family in TTS_TTFT.collect()
+            for sample in family.samples
+            if sample.name == "tts_time_to_first_token_seconds_sum"
+        )
+
     def test_uses_fixed_cached_voice_and_streams_clipped_pcm(self):
         before = self.metric_count()
         text = TextStream(max_chunks=2)
@@ -148,6 +157,23 @@ class CosyVoice3EngineTest(unittest.TestCase):
         self.assertTrue(self.engine.acquire())
         self.assertFalse(self.engine.acquire())
         self.engine.release()
+
+    def test_ttft_excludes_waiting_for_more_client_text(self):
+        before = self.metric_sum()
+        text = TextStream(max_chunks=2)
+        text.append("第一段")
+
+        def finish_later():
+            time.sleep(0.1)
+            text.append("第二段")
+            text.finish()
+
+        producer = threading.Thread(target=finish_later)
+        producer.start()
+        list(self.engine.synthesize(text, "req", "wait-metric"))
+        producer.join(1)
+
+        self.assertLess(self.metric_sum() - before, 0.05)
         self.assertTrue(self.engine.acquire())
         self.engine.release()
 

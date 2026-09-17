@@ -2,11 +2,14 @@
 
 import hashlib
 import json
+import math
 from pathlib import Path
+import struct
 import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+import wave
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -32,7 +35,7 @@ class ServiceConfigurationTest(unittest.TestCase):
         self.model.mkdir()
         (self.model / "CosyVoice-BlankEN").mkdir()
         for name in (
-            "cosyvoice3.yaml", "llm.pt", "flow.pt", "hift.pt", "campplus.onnx",
+            "cosyvoice3.yaml", "config.json", "llm.pt", "flow.pt", "hift.pt", "campplus.onnx",
             "speech_tokenizer_v3.onnx", "CosyVoice-BlankEN/config.json",
             "CosyVoice-BlankEN/model.safetensors", "CosyVoice-BlankEN/merges.txt",
             "CosyVoice-BlankEN/tokenizer_config.json", "CosyVoice-BlankEN/vocab.json",
@@ -48,7 +51,19 @@ class ServiceConfigurationTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(("source:" + name).encode())
         (self.source / "third_party/Matcha-TTS/matcha").mkdir(parents=True)
-        self.prompt.write_bytes(b"RIFF-fixed-voice")
+        sample_rate = 24000
+        samples = []
+        for index in range(sample_rate * 6):
+            if index < sample_rate // 5 or index >= sample_rate * 6 - sample_rate // 5:
+                value = 0
+            else:
+                value = round(2000 * math.sin(2 * math.pi * 220 * index / sample_rate))
+            samples.append(value)
+        with wave.open(str(self.prompt), "wb") as output:
+            output.setnchannels(1)
+            output.setsampwidth(2)
+            output.setframerate(sample_rate)
+            output.writeframes(struct.pack(f"<{len(samples)}h", *samples))
         self.manifest.write_text(json.dumps({
             "voice_id": "aishell3-female",
             "prompt_text": "You are a helpful assistant.<|endofprompt|>大家都在琢磨如何在产品差异和服务上下更多功夫",
@@ -70,7 +85,8 @@ class ServiceConfigurationTest(unittest.TestCase):
             "derived": {
                 "sample_rate_hz": 24000,
                 "channels": 1,
-                "samples": 187023,
+                "samples": len(samples),
+                "duration_seconds": 6.0,
                 "sha256": digest(self.prompt),
             },
         }))
@@ -80,8 +96,13 @@ class ServiceConfigurationTest(unittest.TestCase):
             "model_revision": "29e01c4e8d000f4bcd70751be16fa94bf3d85a18",
             "model_checksums": {
                 name: digest(self.model / name)
-                for name in ("llm.pt", "flow.pt", "hift.pt", "campplus.onnx",
-                             "speech_tokenizer_v3.onnx", "CosyVoice-BlankEN/model.safetensors")
+                for name in (
+                    "cosyvoice3.yaml", "config.json", "llm.pt", "flow.pt", "hift.pt",
+                    "campplus.onnx", "speech_tokenizer_v3.onnx",
+                    "CosyVoice-BlankEN/config.json", "CosyVoice-BlankEN/model.safetensors",
+                    "CosyVoice-BlankEN/merges.txt", "CosyVoice-BlankEN/tokenizer_config.json",
+                    "CosyVoice-BlankEN/vocab.json",
+                )
             },
             "source": str(self.source),
             "source_revision": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
@@ -105,6 +126,7 @@ class ServiceConfigurationTest(unittest.TestCase):
             "text_queue_chunks": 16,
             "text_queue_timeout_seconds": 30,
             "max_concurrency": 1,
+            "minimum_free_memory_mb": 6000,
             "load_vllm": False,
             "load_trt": False,
             "fp16": True,
@@ -137,6 +159,7 @@ class ServiceConfigurationTest(unittest.TestCase):
             "max_concurrency": 2,
             "device": 1,
             "host": "0.0.0.0",
+            "minimum_free_memory_mb": 0,
         }
         for field, invalid in cases.items():
             with self.subTest(field=field):
@@ -148,7 +171,8 @@ class ServiceConfigurationTest(unittest.TestCase):
                 self.cfg[field] = original
 
     def test_rejects_changed_model_source_and_voice_files(self):
-        for path in (self.model / "llm.pt", self.source / "cosyvoice/cli/frontend.py",
+        for path in (self.model / "llm.pt", self.model / "CosyVoice-BlankEN/vocab.json",
+                     self.source / "cosyvoice/cli/frontend.py",
                      self.prompt):
             with self.subTest(path=path.name):
                 original = path.read_bytes()
@@ -156,6 +180,52 @@ class ServiceConfigurationTest(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "mismatch"):
                     self.load()
                 path.write_bytes(original)
+
+    def test_rejects_incomplete_model_checksum_set(self):
+        self.cfg["model_checksums"].pop("CosyVoice-BlankEN/vocab.json")
+        self.write_config()
+        with self.assertRaisesRegex(ValueError, "every required model artifact"):
+            self.load()
+
+    def test_resolves_service_paths_relative_to_the_config_file(self):
+        root = self.path.parent
+        self.cfg["source"] = str(self.source.relative_to(root))
+        self.cfg["voice_manifest"] = str(self.manifest.relative_to(root))
+        self.cfg["prompt_wav"] = str(self.prompt.relative_to(root))
+        self.write_config()
+        cfg = self.load()
+        self.assertEqual(cfg["source"], str(self.source.resolve()))
+        self.assertEqual(cfg["voice_manifest"], str(self.manifest.resolve()))
+        self.assertEqual(cfg["prompt_wav"], str(self.prompt.resolve()))
+
+    def test_rejects_clipped_fixed_voice(self):
+        with wave.open(str(self.prompt), "rb") as source:
+            params = source.getparams()
+            audio = bytearray(source.readframes(source.getnframes()))
+        audio[100:102] = struct.pack("<h", 32767)
+        with wave.open(str(self.prompt), "wb") as output:
+            output.setparams(params)
+            output.writeframes(audio)
+        manifest = json.loads(self.manifest.read_text())
+        manifest["derived"]["sha256"] = digest(self.prompt)
+        self.manifest.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "clipped"):
+            self.load()
+
+    def test_rejects_fixed_voice_without_quiet_edge_padding(self):
+        with wave.open(str(self.prompt), "rb") as source:
+            params = source.getparams()
+            audio = bytearray(source.readframes(source.getnframes()))
+        for offset in range(0, 2400 * 2, 2):
+            audio[offset:offset + 2] = struct.pack("<h", 2000)
+        with wave.open(str(self.prompt), "wb") as output:
+            output.setparams(params)
+            output.writeframes(audio)
+        manifest = json.loads(self.manifest.read_text())
+        manifest["derived"]["sha256"] = digest(self.prompt)
+        self.manifest.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(ValueError, "edge silence"):
+            self.load()
 
     def test_rejects_cosyvoice3_prompt_without_endofprompt(self):
         manifest = json.loads(self.manifest.read_text())

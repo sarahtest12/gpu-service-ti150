@@ -104,15 +104,16 @@ AISHELL-3 的 Apache-2.0 女声 SSB0005，服务端启动时注册，客户端�
 | `invalid_message` | 帧类型、对象字段或事件类型不符合契约 | false |
 | `invalid_text` | 文本为空或含控制序列 | false |
 | `input_chunk_too_long` | 单个文本块超过 1024 字符 | false |
-| `input_too_long` | utterance 合计超过 4096 字符；服务端结束当前文本输入 | false |
+| `input_too_long` | utterance 合计超过 4096 字符；服务端取消当前 utterance | false |
 | `invalid_state` | 事件不适用于当前状态 | false |
 | `input_backpressure` | 有界文本队列在 30 秒内不能接收新块 | false |
 | `message_too_large` | 单个 WebSocket 文本消息超过 16384 字节 | false |
 | `input_timeout` | 活跃 utterance 等待后续文本超过 300 秒 | true |
 | `inference_failed` | 模型或输出处理失败 | true |
 
-`fatal=false` 表示连接仍可能继续当前状态机；客户端必须按状态等待 `audio.done`，不能把错误事件
-当作音频结束。`fatal=true` 后服务端使用 close code 1011 关闭连接。服务端错误不包含输入文本、
+空闲状态的 `fatal=false` 错误不改变状态；活跃状态的 `fatal=false` 错误会取消当前 utterance，
+清理生成器并回到空闲状态，不再发送该 utterance 的 `audio.done`，客户端可开始下一条。
+`fatal=true` 后服务端使用 close code 1011 关闭连接。服务端错误不包含输入文本、
 参考音频路径、内部 key 或堆栈。
 
 ## 状态和资源限制
@@ -123,7 +124,9 @@ stateDiagram-v2
     Idle --> Active: input.text / audio.start
     Active --> InputDone: input.done
     Active --> Active: input.text / binary PCM
+    Active --> Idle: nonfatal error / cancel
     InputDone --> InputDone: binary PCM
+    InputDone --> Idle: nonfatal error / cancel
     InputDone --> Idle: audio.done
     Idle --> [*]: session.close
 ```

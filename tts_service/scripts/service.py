@@ -2,6 +2,7 @@
 """Provision, validate, and run Fun-CosyVoice3 on the vendor CoreX stack."""
 
 import argparse
+from array import array
 import hashlib
 from importlib.metadata import version
 import ipaddress
@@ -14,6 +15,7 @@ import secrets
 import socket
 import subprocess
 import sys
+import wave
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -45,7 +47,19 @@ EXPECTED = {
     "gdown": "5.1.0",
     "wget": "3.2",
     "pyworld": "0.3.4",
+    "huggingface-hub": "0.36.2",
+    "tokenizers": "0.21.4",
+    "einops": "0.8.2",
+    "fsspec": "2024.12.0",
+    "packaging": "24.2",
+    "websockets": "15.0.1",
 }
+REQUIRED_MODEL_FILES = (
+    "cosyvoice3.yaml", "config.json", "llm.pt", "flow.pt", "hift.pt", "campplus.onnx",
+    "speech_tokenizer_v3.onnx", "CosyVoice-BlankEN/config.json",
+    "CosyVoice-BlankEN/model.safetensors", "CosyVoice-BlankEN/merges.txt",
+    "CosyVoice-BlankEN/tokenizer_config.json", "CosyVoice-BlankEN/vocab.json",
+)
 
 
 def sha256(path):
@@ -69,6 +83,61 @@ def positive(cfg, key, *, integer=False, maximum=None, allow_zero=False):
 def revision(value, name):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{40}", value):
         raise ValueError(f"invalid {name}")
+
+
+def resolve_config_paths(cfg, config_path):
+    """Resolve checkout-owned paths relative to the config file."""
+    base = Path(config_path).resolve().parent
+    for key in ("source", "voice_manifest", "prompt_wav"):
+        value = cfg.get(key)
+        if not isinstance(value, str) or not value:
+            raise ValueError(f"invalid {key}")
+        path = Path(value)
+        cfg[key] = str(path if path.is_absolute() else (base / path).resolve())
+    return cfg
+
+
+def validate_voice_audio(path, derived):
+    try:
+        with wave.open(str(path), "rb") as source:
+            channels = source.getnchannels()
+            sample_width = source.getsampwidth()
+            sample_rate = source.getframerate()
+            frame_count = source.getnframes()
+            payload = source.readframes(frame_count)
+    except (EOFError, wave.Error) as error:
+        raise ValueError("fixed voice must be PCM WAV") from error
+    if (channels != 1 or sample_width != 2
+            or sample_rate != derived["sample_rate_hz"]
+            or frame_count != derived["samples"]):
+        raise ValueError("fixed voice audio metadata mismatch")
+    duration = frame_count / sample_rate
+    if (not 5 <= duration <= 10
+            or not math.isclose(duration, derived["duration_seconds"], abs_tol=1e-6)):
+        raise ValueError("fixed voice effective duration must be 5 to 10 seconds")
+    samples = array("h")
+    samples.frombytes(payload)
+    if sys.byteorder != "little":
+        samples.byteswap()
+    if not samples or any(abs(value) >= 32767 for value in samples):
+        raise ValueError("fixed voice is empty or clipped")
+    active_threshold = round(32767 * 0.01)
+    first_active = next((index for index, value in enumerate(samples)
+                         if abs(value) >= active_threshold), len(samples))
+    last_active = next((index for index, value in enumerate(reversed(samples))
+                        if abs(value) >= active_threshold), len(samples))
+    leading_silence = first_active / sample_rate
+    trailing_silence = last_active / sample_rate
+    if (first_active == len(samples)
+            or not 0.05 <= leading_silence <= 0.5
+            or not 0.05 <= trailing_silence <= 0.5):
+        raise ValueError("fixed voice edge silence must be 0.05 to 0.5 seconds")
+    edge = list(samples[:first_active]) + list(samples[len(samples) - last_active:])
+    if edge:
+        rms = math.sqrt(sum(value * value for value in edge) / len(edge))
+        noise_dbfs = 20 * math.log10(max(rms, 1.0) / 32767)
+        if noise_dbfs > -45:
+            raise ValueError("fixed voice edge noise exceeds -45 dBFS")
 
 
 def read_voice_manifest(cfg, *, require_audio):
@@ -96,6 +165,8 @@ def read_voice_manifest(cfg, *, require_audio):
         raise ValueError("voice manifest has no utterances")
     for item in utterances:
         if (not isinstance(item.get("path"), str)
+                or not isinstance(item.get("transcript"), str)
+                or not item["transcript"].strip()
                 or not re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", ""))
                 or type(item.get("trim_start_sample")) is not int
                 or type(item.get("trim_end_sample")) is not int
@@ -112,16 +183,21 @@ def read_voice_manifest(cfg, *, require_audio):
             or derived.get("channels") != 1
             or type(derived.get("samples")) is not int
             or derived["samples"] < 1
+            or type(derived.get("duration_seconds")) not in (int, float)
+            or not math.isfinite(derived["duration_seconds"])
+            or derived["duration_seconds"] <= 0
             or not re.fullmatch(r"[0-9a-f]{64}", derived.get("sha256", ""))):
         raise ValueError("invalid derived voice manifest")
     if require_audio:
         if not prompt_wav.is_file() or sha256(prompt_wav) != derived["sha256"]:
             raise ValueError("fixed voice audio mismatch")
+        validate_voice_audio(prompt_wav, derived)
     return manifest
 
 
 def config(*, require_artifacts=True):
     cfg = json.loads(CONFIG.read_text())
+    resolve_config_paths(cfg, CONFIG)
     if not ipaddress.ip_address(cfg["host"]).is_loopback:
         raise ValueError("TTS must listen on loopback; expose it only through the gateway")
     positive(cfg, "port", integer=True, maximum=65535)
@@ -135,6 +211,7 @@ def config(*, require_artifacts=True):
     positive(cfg, "text_queue_chunks", integer=True, maximum=1024)
     positive(cfg, "text_queue_timeout_seconds", integer=True, maximum=300)
     positive(cfg, "max_concurrency", integer=True, maximum=4)
+    positive(cfg, "minimum_free_memory_mb", integer=True, maximum=32768)
     revision(cfg["model_revision"], "model_revision")
     revision(cfg["source_revision"], "source_revision")
     if (cfg["model_name"] != "fun-cosyvoice3-0.5b-2512"
@@ -146,10 +223,15 @@ def config(*, require_artifacts=True):
         raise ValueError("input chunk limit exceeds utterance limit")
     if (cfg["load_vllm"], cfg["load_trt"], cfg["fp16"]) != (False, False, True):
         raise ValueError("this deployment uses native PyTorch FP16 bi-streaming")
+    if (not isinstance(cfg.get("model_checksums"), dict)
+            or set(cfg["model_checksums"]) != set(REQUIRED_MODEL_FILES)
+            or not all(re.fullmatch(r"[0-9a-f]{64}", value or "")
+                       for value in cfg["model_checksums"].values())):
+        raise ValueError("model_checksums must pin every required model artifact")
 
     model, source = Path(cfg["model"]), Path(cfg["source"])
-    if not model.is_absolute() or not source.is_absolute():
-        raise ValueError("model and source paths must be absolute")
+    if not model.is_absolute():
+        raise ValueError("model path must be absolute")
     cfg["prompt_text"] = read_voice_manifest(cfg, require_audio=require_artifacts)["prompt_text"]
     if not require_artifacts:
         return cfg
@@ -157,13 +239,7 @@ def config(*, require_artifacts=True):
         raise ValueError("model must be an existing absolute directory")
     if not (source / "cosyvoice").is_dir():
         raise ValueError("pinned CosyVoice source is missing")
-    required_model = (
-        "cosyvoice3.yaml", "llm.pt", "flow.pt", "hift.pt", "campplus.onnx",
-        "speech_tokenizer_v3.onnx", "CosyVoice-BlankEN/config.json",
-        "CosyVoice-BlankEN/model.safetensors", "CosyVoice-BlankEN/merges.txt",
-        "CosyVoice-BlankEN/tokenizer_config.json", "CosyVoice-BlankEN/vocab.json",
-    )
-    missing = [name for name in required_model if not (model / name).is_file()]
+    missing = [name for name in REQUIRED_MODEL_FILES if not (model / name).is_file()]
     if missing:
         raise ValueError("CosyVoice3 checkpoint is incomplete: " + ", ".join(missing))
     if not (source / "third_party/Matcha-TTS/matcha").is_dir():
@@ -250,6 +326,7 @@ def prepare_voice(cfg):
         raise ValueError("derived fixed voice checksum mismatch")
     os.chmod(temporary, 0o600)
     os.replace(temporary, target)
+    read_voice_manifest(cfg, require_audio=True)
 
 
 def check(cfg):
@@ -259,11 +336,17 @@ def check(cfg):
         actual = version(package)
         if actual != expected:
             raise ValueError(f"{package} version mismatch: expected {expected}, got {actual}")
-    probe = """
+    probe = f"""
 import onnxruntime
 import torch
 from cosyvoice.cli.cosyvoice import AutoModel
 assert '/usr/local/corex' in torch.__file__
+assert torch.cuda.is_available(), 'CoreX CUDA is unavailable'
+assert torch.cuda.device_count() == 1, 'CUDA_VISIBLE_DEVICES must expose exactly one GPU'
+free_bytes, total_bytes = torch.cuda.mem_get_info()
+assert free_bytes >= {cfg["minimum_free_memory_mb"]} * 1024 * 1024, 'insufficient free GPU memory'
+probe = torch.ones(1, device='cuda', dtype=torch.float16)
+assert probe.is_cuda and probe.dtype == torch.float16
 providers = onnxruntime.get_available_providers()
 assert 'CPUExecutionProvider' in providers
 assert 'CUDAExecutionProvider' not in providers

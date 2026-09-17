@@ -3,6 +3,7 @@
 import json
 import logging
 from pathlib import Path
+from types import SimpleNamespace
 import sys
 import threading
 import tempfile
@@ -18,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from engine import CosyVoice3Engine
-from server import VendorPayloadFilter, create_app, load_runtime_config
+from server import VendorPayloadFilter, create_app, load_runtime_config, validate_loaded_model
 
 
 class Tensor:
@@ -111,12 +112,37 @@ class TtsServerTest(unittest.TestCase):
     def test_runtime_config_loads_validated_prompt_text_from_voice_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "server.json"
-            path.write_text(json.dumps({"voice_manifest": "/fixed/voice.json"}))
+            path.write_text(json.dumps({
+                "source": "source",
+                "voice_manifest": "voice.json",
+                "prompt_wav": "voice.wav",
+            }))
             with patch("service.read_voice_manifest",
                        return_value={"prompt_text": "validated fixed prompt"}) as read_manifest:
                 cfg = load_runtime_config(path)
         self.assertEqual(cfg["prompt_text"], "validated fixed prompt")
+        self.assertEqual(cfg["source"], str((path.parent / "source").resolve()))
+        self.assertEqual(cfg["voice_manifest"], str((path.parent / "voice.json").resolve()))
+        self.assertEqual(cfg["prompt_wav"], str((path.parent / "voice.wav").resolve()))
         read_manifest.assert_called_once_with(cfg, require_audio=True)
+
+    def test_loaded_model_must_remain_on_the_gpu_fp16_path(self):
+        valid = SimpleNamespace(
+            fp16=True,
+            model=SimpleNamespace(fp16=True, device=SimpleNamespace(type="cuda")),
+        )
+        validate_loaded_model(valid)
+        for model in (
+            SimpleNamespace(fp16=False, model=valid.model),
+            SimpleNamespace(fp16=True, model=SimpleNamespace(
+                fp16=False, device=SimpleNamespace(type="cuda"),
+            )),
+            SimpleNamespace(fp16=True, model=SimpleNamespace(
+                fp16=True, device=SimpleNamespace(type="cpu"),
+            )),
+        ):
+            with self.subTest(model=model), self.assertRaisesRegex(RuntimeError, "GPU FP16"):
+                validate_loaded_model(model)
 
     def test_auth_internal_health_metrics_and_removed_http_business_routes(self):
         self.assertEqual(self.client.get("/health").status_code, 401)
@@ -192,10 +218,13 @@ class TtsServerTest(unittest.TestCase):
             websocket.receive_bytes()
             websocket.send_text("{")
             self.assertEqual(websocket.receive_json()["code"], "invalid_json")
+            websocket.send_json({"type": "input.text", "text": "活跃错误后的新请求。"})
+            self.assertEqual(websocket.receive_json()["type"], "audio.start")
+            websocket.receive_bytes()
             websocket.send_json({"type": "input.done"})
             self.receive_utterance_tail(websocket)
 
-    def test_rejects_text_after_done_until_audio_done(self):
+    def test_text_after_done_aborts_utterance_and_allows_next(self):
         self.model.pause_after_done = True
         with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
             websocket.receive_json()
@@ -209,6 +238,10 @@ class TtsServerTest(unittest.TestCase):
             self.assertEqual((error["type"], error["code"], error["fatal"]),
                              ("error", "invalid_state", False))
             self.model.release.set()
+            websocket.send_json({"type": "input.text", "text": "状态错误后的新请求。"})
+            self.assertEqual(websocket.receive_json()["type"], "audio.start")
+            websocket.receive_bytes()
+            websocket.send_json({"type": "input.done"})
             self.receive_utterance_tail(websocket)
 
     def test_limits_total_utterance_characters(self):
@@ -223,6 +256,10 @@ class TtsServerTest(unittest.TestCase):
             error = websocket.receive_json()
             self.assertEqual(error["code"], "input_too_long")
             self.assertFalse(error["fatal"])
+            websocket.send_json({"type": "input.text", "text": "超限后的新请求。"})
+            self.assertEqual(websocket.receive_json()["type"], "audio.start")
+            websocket.receive_bytes()
+            websocket.send_json({"type": "input.done"})
             self.receive_utterance_tail(websocket)
 
     def test_second_connection_is_rejected_until_first_closes(self):

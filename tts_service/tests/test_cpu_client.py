@@ -41,6 +41,7 @@ class TtsRealtimeClientTest(unittest.TestCase):
         self.headers = []
         self.paths = []
         self.messages = []
+        self.connection_messages = []
         self.connections = 0
         self.session_close = threading.Event()
         fixture = self
@@ -52,18 +53,23 @@ class TtsRealtimeClientTest(unittest.TestCase):
 
         def handler(connection):
             fixture.connections += 1
+            messages = []
+            fixture.connection_messages.append(messages)
             metadata = {"type": "session.created", "session_id": "tts_test",
                         "model": "fun-cosyvoice3-0.5b-2512", "voice": "aishell3-female",
                         "audio": {"format": "pcm_s16le", "sample_rate_hz": 24000,
                                   "channels": 1}}
             if fixture.mode == "bad_metadata":
                 metadata["audio"]["sample_rate_hz"] = 22050
+            if fixture.mode == "bad_identity":
+                metadata["voice"] = "unexpected-voice"
             connection.send(json.dumps(metadata))
             utterance = 0
             current_id = None
             for raw in connection:
                 event = json.loads(raw)
                 fixture.messages.append(event)
+                messages.append(event)
                 if event["type"] == "session.close":
                     fixture.session_close.set()
                     return
@@ -134,8 +140,46 @@ class TtsRealtimeClientTest(unittest.TestCase):
 
     def test_rejects_unsupported_session_audio_metadata(self):
         self.mode = "bad_metadata"
-        with self.assertRaisesRegex(RuntimeError, "unsupported audio metadata"):
+        with self.assertRaisesRegex(RuntimeError, "unsupported model, voice or audio"):
             self.client().connect()
+
+    def test_rejects_unexpected_fixed_model_or_voice(self):
+        self.mode = "bad_identity"
+        with self.assertRaisesRegex(RuntimeError, "unsupported model, voice or audio"):
+            self.client().connect()
+
+    def test_lazy_iterators_cannot_overlap_on_one_connection(self):
+        with self.client() as client:
+            first = client.synthesize(["第一条。"])
+            second = client.synthesize(["不应并行。"])
+            self.assertTrue(next(first))
+            with self.assertRaisesRegex(RuntimeError, "already active"):
+                next(second)
+            self.assertTrue(b"".join(first))
+
+    def test_abandoned_sender_cannot_write_into_reconnected_session(self):
+        release_old_text = threading.Event()
+
+        def blocked_text():
+            yield "旧请求。"
+            self.assertTrue(release_old_text.wait(2))
+            yield "不得进入新连接。"
+
+        client = self.client()
+        client.connect()
+        abandoned = client.synthesize(blocked_text())
+        self.assertTrue(next(abandoned))
+        abandoned.close()
+        client.connect()
+        release_old_text.set()
+        self.assertTrue(b"".join(client.synthesize(["新请求。"])))
+        client.close()
+        self.assertEqual(self.connections, 2)
+        self.assertEqual(
+            [event.get("text") for event in self.connection_messages[1]
+             if event["type"] == "input.text"],
+            ["新请求。"],
+        )
 
     def test_propagates_server_error_without_reusing_failed_connection(self):
         self.mode = "error"
