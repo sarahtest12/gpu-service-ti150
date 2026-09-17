@@ -1,6 +1,7 @@
 """Bounded text input and native PyTorch CosyVoice3 synthesis."""
 
 from collections import deque
+from concurrent.futures import CancelledError
 import functools
 import logging
 import math
@@ -89,7 +90,7 @@ class TextStream:
                     self._condition.wait()
                     self._waiting_seconds += time.perf_counter() - started_waiting
                 if self._cancelled:
-                    return
+                    raise CancelledError
                 if self._items:
                     item = self._items.popleft()
                     self._condition.notify_all()
@@ -183,6 +184,8 @@ class CosyVoice3Engine:
                 try:
                     for _ in output:
                         pass
+                except CancelledError:
+                    pass
                 except Exception as error:
                     LOG.error(
                         "TTS generator cleanup failed request_id=%s utterance_id=%s error_type=%s",

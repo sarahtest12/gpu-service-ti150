@@ -138,3 +138,21 @@ TTS 公共 HTTP 操作从 OpenAPI 和网关中删除；内部 `/health` 与 `/me
 4034.920 MB，近 60 秒首语音 token 平均 124.039 ms、P95 296 ms。
 
 前面的 CosyVoice v1 HTTP 章节保留为 2026-09-11 的历史验收记录，不再描述当前公共接口。
+
+## TTS 活动 utterance 取消
+
+2026-09-17 增加 `response.cancel` 和 `response.cancelled`，契约版本升为 `0.8.0`。取消事件携带
+当前 `audio.start` 返回的 `utterance_id`；服务端停止后续 PCM、清理生成器并保留 WebSocket。
+错误 ID 返回非致命 `invalid_utterance`，不会停止当前任务。
+
+| 校验 | 结果 |
+| --- | --- |
+| TTS 引擎、服务端、CPU 客户端和跨文件契约 | 54 项通过 |
+| 统一网关协议回归 | 15 项通过；4 项需显式启用的真机测试跳过 |
+| OpenAPI 3.1.1（`openapi-spec-validator==0.7.2`） | 通过 |
+| 固定源码 revision、补丁、完整差异和文件哈希 | `service.py check` 通过 |
+| 真实 TLS/WSS 取消 | 首段 PCM 后 0.108240 秒收到 `response.cancelled`，取消后 PCM 为 0 字节 |
+| 会话复用 | 同一连接随后完成第二条合成，得到 430080 字节 PCM |
+
+真实取消测试通过统一 `/tts/v1/realtime`、公开 key、NGINX 内部 key 替换和本机 TTS 完成。测试后
+TTS 进程仍为 `ready: true`，日志没有 `ERROR` 或异常堆栈。

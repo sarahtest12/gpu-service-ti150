@@ -49,11 +49,16 @@ with TtsRealtimeClient(
         send_pcm_s16le_24000_mono_to_browser(pcm_chunk)
 ```
 
+当浏览器用户打断播报时，从另一个线程调用 `client.cancel_active()`。它会取消仍在等待 LLM 文本的
+`TtsTextInput`、发送带当前 `utterance_id` 的 `response.cancel`，并让 `synthesize()` 在收到
+`response.cancelled` 后正常结束。此后可在同一客户端上开始下一次 `synthesize()`；调用方还应
+清空浏览器播放器中已经排队但尚未播放的 PCM。
+
 `synthesize()` 在后台持续消费 `TtsTextInput`，同时在调用线程产出音频，因此上游 LLM 尚未结束
 文本输出时，CPU 后端就可以收到并转发首批 PCM。`TtsTextInput` 是有界且可取消的；流式调用必须
 使用它，已完整保存在内存中的短文本也可直接传 `list` 或 `tuple`。每次调用只对应一个 utterance；
-必须把返回迭代器
-消费到 `audio.done` 才能开始下一次调用。服务端错误、超时或协议错会关闭当前连接，调用方应新建
+必须把返回迭代器消费到 `audio.done` 或 `response.cancelled` 才能开始下一次调用。服务端错误、
+超时或协议错会关闭当前连接，调用方应新建
 客户端连接；不要自动重放已经开始的 utterance，以免重复播报。
 
 同一客户端的并发 `synthesize()` 会被拒绝。如果调用方提前停止消费或关闭返回迭代器，客户端会

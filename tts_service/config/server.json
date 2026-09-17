@@ -20,8 +20,8 @@
   "source": "../runtime/CosyVoice",
   "source_revision": "074ca6dc9e80a2f424f1f74b48bdd7d3fea531cc",
   "source_patch": "../patches/corex-runtime.patch",
-  "source_patch_sha256": "f4d0b1e7e10fa4353af5ba64b078af9b453882f5f70dac472a41dd92542679dc",
-  "source_tree_diff_sha256": "6b0476e963240717cd28277172cac605bc1c184752a5f4cfe02f2e61806e9ccb",
+  "source_patch_sha256": "b32f39ca12b05bfa013f2874a03ebb58ea6ca36a8334b18fc76ac0a58b699ade",
+  "source_tree_diff_sha256": "340d6a60611412bdb86ce2b28f0b6a270b891983bcfeca97d2256226edc23056",
   "source_submodules": {
     "third_party/Matcha-TTS": "dd9105b34bf2be2230f4aa1e4769fb586a3c824e"
   },
@@ -29,7 +29,7 @@
   "source_checksums": {
     "cosyvoice/cli/cosyvoice.py": "60388026ffd276bd92e215aa992409ea3f980e6ec3cfe07eb2f4463a49d6d6ee",
     "cosyvoice/cli/frontend.py": "b291fd5314439f571d0c1fee4d7c2c53bff13c2ecb4dc08c35e4804c4fa33abf",
-    "cosyvoice/cli/model.py": "73f9d1439de7147e5d615ae88b18233fb73eb87aaae954fe5054c5cbb5cf0a6d",
+    "cosyvoice/cli/model.py": "d6ada11eff497d1a213e6f1f6744313ce8ab4686d59e5be397494b10914d607d",
     "cosyvoice/hifigan/generator.py": "7352af65692bfd2a4e557dd198eff893ff8137ca42178bd5fbac2d9394fb3e49"
   },
   "voice_manifest": "../assets/voices/aishell3-female.json",

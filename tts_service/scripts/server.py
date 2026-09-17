@@ -30,11 +30,12 @@ class VendorPayloadFilter(logging.Filter):
 
 
 class ProtocolError(Exception):
-    def __init__(self, code, message, *, fatal=False):
+    def __init__(self, code, message, *, fatal=False, preserve_utterance=False):
         super().__init__(message)
         self.code = code
         self.message = message
         self.fatal = fatal
+        self.preserve_utterance = preserve_utterance
 
 
 def configure_logging():
@@ -98,11 +99,29 @@ def parse_idle_message(message, cfg):
         return kind, None
     if kind == "input.done" and set(message) == {"type"}:
         raise ProtocolError("invalid_state", "input.done requires an active utterance")
+    if (kind == "response.cancel"
+            and set(message) == {"type", "utterance_id"}
+            and isinstance(message["utterance_id"], str)
+            and message["utterance_id"]):
+        raise ProtocolError("invalid_state", "response.cancel requires an active utterance")
     raise ProtocolError("invalid_message", "unsupported message for an idle session")
 
 
-def parse_active_message(message, cfg, input_done):
+def parse_active_message(message, cfg, input_done, utterance_id):
     kind = message["type"]
+    if kind == "response.cancel":
+        if (set(message) != {"type", "utterance_id"}
+                or not isinstance(message.get("utterance_id"), str)
+                or not message["utterance_id"]):
+            raise ProtocolError(
+                "invalid_message", "response.cancel requires an utterance_id",
+            )
+        if message["utterance_id"] != utterance_id:
+            raise ProtocolError(
+                "invalid_utterance", "utterance_id does not match the active utterance",
+                preserve_utterance=True,
+            )
+        return kind, None
     if input_done:
         raise ProtocolError("invalid_state", "messages are not allowed after input.done")
     if kind == "input.text" and set(message) == {"type", "text"}:
@@ -169,6 +188,7 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
     iterator = engine.synthesize(text_stream, request_id, utterance_id)
     receive_task = None
     output_task = None
+    cancelled = False
     try:
         if not await send_control(
             websocket, {"type": "audio.start", "utterance_id": utterance_id},
@@ -189,7 +209,13 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
             if receive_task in completed:
                 try:
                     message = receive_task.result()
-                    kind, text = parse_active_message(message, cfg, input_done)
+                    kind, text = parse_active_message(
+                        message, cfg, input_done, utterance_id,
+                    )
+                    if kind == "response.cancel":
+                        text_stream.cancel()
+                        cancelled = True
+                        break
                     if kind == "input.done":
                         input_done = True
                         text_stream.finish()
@@ -217,8 +243,9 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
                         raise ProtocolError(
                             "output_timeout", "timed out sending a control event", fatal=True,
                         )
-                    text_stream.cancel()
-                    return
+                    if not protocol_error.preserve_utterance:
+                        text_stream.cancel()
+                        return
                 receive_task = asyncio.create_task(
                     receive_message(
                         websocket, cfg,
@@ -259,13 +286,21 @@ async def run_utterance(websocket, engine, cfg, first_text, request_id, utteranc
         raise ProtocolError("inference_failed", "TTS inference failed", fatal=True) from error
     finally:
         await stop_task(receive_task)
-        if output_task is not None and not output_task.done():
-            text_stream.cancel()
+        if output_task is not None:
+            if not output_task.done():
+                text_stream.cancel()
             try:
                 await output_task
-            except Exception:
+            except (Exception, asyncio.CancelledError):
                 pass
         await close_iterator(iterator)
+    if cancelled and not await send_control(
+        websocket, {"type": "response.cancelled", "utterance_id": utterance_id},
+        cfg["output_timeout_seconds"],
+    ):
+        raise ProtocolError(
+            "output_timeout", "timed out sending a control event", fatal=True,
+        )
 
 
 async def serve_session(websocket, engine, cfg, request_id, session_id):

@@ -207,7 +207,8 @@ class TtsServerTest(unittest.TestCase):
             )
             return websocket
 
-        websocket = asyncio.run(exercise())
+        with self.assertNoLogs("tts-service", level="ERROR"):
+            websocket = asyncio.run(exercise())
         self.assertTrue(websocket.backpressured)
 
     def test_auth_internal_health_metrics_and_removed_http_business_routes(self):
@@ -258,6 +259,78 @@ class TtsServerTest(unittest.TestCase):
                 websocket.receive_json()
             self.assertEqual(caught.exception.code, 1000)
         self.assertEqual(len(self.model.calls), 2)
+
+    def test_cancels_an_active_utterance_and_reuses_the_connection(self):
+        with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "input.text", "text": "这段播报会被取消。"})
+            started = websocket.receive_json()
+            self.assertEqual(started["type"], "audio.start")
+            websocket.receive_bytes()
+
+            websocket.send_json({
+                "type": "response.cancel",
+                "utterance_id": started["utterance_id"],
+            })
+            cancelled = websocket.receive_json()
+            self.assertEqual(cancelled, {
+                "type": "response.cancelled",
+                "utterance_id": started["utterance_id"],
+            })
+
+            websocket.send_json({
+                "type": "response.cancel",
+                "utterance_id": started["utterance_id"],
+            })
+            stale = websocket.receive_json()
+            self.assertEqual((stale["type"], stale["code"], stale["fatal"]),
+                             ("error", "invalid_state", False))
+
+            websocket.send_json({"type": "input.text", "text": "取消后继续合成。"})
+            next_started = websocket.receive_json()
+            self.assertEqual(next_started["type"], "audio.start")
+            websocket.receive_bytes()
+            websocket.send_json({"type": "input.done"})
+            self.receive_utterance_tail(websocket)
+
+    def test_cancel_with_the_wrong_id_does_not_stop_the_active_utterance(self):
+        with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "input.text", "text": "仍应完整合成。"})
+            started = websocket.receive_json()
+            websocket.receive_bytes()
+
+            websocket.send_json({
+                "type": "response.cancel",
+                "utterance_id": "utt_wrong",
+            })
+            error = websocket.receive_json()
+            self.assertEqual((error["type"], error["code"], error["fatal"]),
+                             ("error", "invalid_utterance", False))
+
+            websocket.send_json({"type": "input.done"})
+            done = self.receive_utterance_tail(websocket)
+            self.assertEqual(done["utterance_id"], started["utterance_id"])
+
+    def test_cancels_after_input_done_before_audio_done(self):
+        self.model.pause_after_done = True
+        with self.client.websocket_connect("/realtime", headers=self.headers) as websocket:
+            websocket.receive_json()
+            websocket.send_json({"type": "input.text", "text": "已经结束文本输入。"})
+            started = websocket.receive_json()
+            websocket.receive_bytes()
+            websocket.send_json({"type": "input.done"})
+            self.assertTrue(self.model.finished_text.wait(1))
+
+            websocket.send_json({
+                "type": "response.cancel",
+                "utterance_id": started["utterance_id"],
+            })
+            self.model.release.set()
+            self.assertEqual(websocket.receive_json(), {
+                "type": "response.cancelled",
+                "utterance_id": started["utterance_id"],
+            })
 
     def test_simultaneous_input_done_and_model_completion_succeeds(self):
         engine = CosyVoice3Engine(DoneRaceModel(), configuration())

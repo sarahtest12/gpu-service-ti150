@@ -132,6 +132,8 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 
 TTS 使用 `WSS /tts/v1/realtime`。客户端可持续发送多个 `input.text`，服务端可在
 `input.done` 前返回二进制 PCM；`audio.done` 表示单个 utterance 完整结束，同一连接可顺序复用。
+活动 utterance 可发送带当前 ID 的 `response.cancel`；服务端清理完成后返回
+`response.cancelled`，连接保持可用。
 模型固定为 `fun-cosyvoice3-0.5b-2512`，音色固定为 `aishell3-female`，输出固定为 24000 Hz
 单声道 PCM S16LE。完整消息、状态、错误和限制见 [`tts-websocket.md`](tts-websocket.md)。
 

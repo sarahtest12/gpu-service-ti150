@@ -77,6 +77,9 @@ python3 gateway/service.py start --service tts
 4. 客户端发送 `input.done`；服务端完成后发送 `audio.done`。
 5. 收到 `audio.done` 后，同一 WebSocket 可开始下一条 utterance；空闲时发送 `session.close`。
 
+需要打断当前播报时，客户端发送带当前 `utterance_id` 的 `response.cancel`。服务端停止下发后续
+PCM、清理生成器并返回 `response.cancelled`；该 utterance 不再发送 `audio.done`，连接可继续复用。
+
 完整帧格式、状态、限制与错误码见
 [`../contracts/tts-websocket.md`](../contracts/tts-websocket.md)。旧的公开语音 HTTP、音色列表和 TTS
 健康路径已移除；TTS 的 `/health` 与 `/metrics` 仍作为 loopback 内部接口保留，并要求内部 key。

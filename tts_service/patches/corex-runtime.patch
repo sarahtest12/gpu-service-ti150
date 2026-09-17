@@ -25,22 +25,98 @@ index 6d397cc..6ce258d 100644
 -                                                                                "CPUExecutionProvider"])
 +                                                                     providers=["CPUExecutionProvider"])
 diff --git a/cosyvoice/cli/model.py b/cosyvoice/cli/model.py
-index 92a15d9..d669dec 100644
+index 92a15d9..a5eb530 100644
 --- a/cosyvoice/cli/model.py
 +++ b/cosyvoice/cli/model.py
-@@ -345 +345,5 @@ class CosyVoice2Model(CosyVoiceModel):
+@@ -15,0 +16 @@ import os
++from concurrent.futures import CancelledError
+@@ -121,8 +122,11 @@ class CosyVoiceModel:
+-            for i in token_generator:
+-                if i in self.silent_tokens:
+-                    cur_silent_token_num += 1
+-                    if cur_silent_token_num > max_silent_token_num:
+-                        continue
+-                else:
+-                    cur_silent_token_num = 0
+-                self.tts_speech_token_dict[uuid].append(i)
++            try:
++                for i in token_generator:
++                    if i in self.silent_tokens:
++                        cur_silent_token_num += 1
++                        if cur_silent_token_num > max_silent_token_num:
++                            continue
++                    else:
++                        cur_silent_token_num = 0
++                    self.tts_speech_token_dict[uuid].append(i)
++            except CancelledError:
++                self.llm_cancelled_dict[uuid] = True
+@@ -273,0 +278 @@ class CosyVoice2Model(CosyVoiceModel):
++        self.llm_cancelled_dict = {}
+@@ -336,0 +342 @@ class CosyVoice2Model(CosyVoiceModel):
++            self.llm_cancelled_dict[this_uuid] = False
+@@ -345 +351,5 @@ class CosyVoice2Model(CosyVoiceModel):
 -            prompt_token_pad = int(np.ceil(flow_prompt_speech_token.shape[1] / self.token_hop_len) * self.token_hop_len - flow_prompt_speech_token.shape[1])
 +            # Stream hop growth is request-local. Persisting it on the model makes
 +            # later utterances on a reusable session wait for progressively more
 +            # tokens before their first audio chunk.
 +            token_hop_len = self.token_hop_len
 +            prompt_token_pad = int(np.ceil(flow_prompt_speech_token.shape[1] / token_hop_len) * token_hop_len - flow_prompt_speech_token.shape[1])
-@@ -348 +352 @@ class CosyVoice2Model(CosyVoiceModel):
+@@ -348 +358,3 @@ class CosyVoice2Model(CosyVoiceModel):
 -                this_token_hop_len = self.token_hop_len + prompt_token_pad if token_offset == 0 else self.token_hop_len
++                if self.llm_cancelled_dict[this_uuid] is True:
++                    break
 +                this_token_hop_len = token_hop_len + prompt_token_pad if token_offset == 0 else token_hop_len
-@@ -360 +364 @@ class CosyVoice2Model(CosyVoiceModel):
+@@ -360 +372 @@ class CosyVoice2Model(CosyVoiceModel):
 -                    self.token_hop_len = min(self.token_max_hop_len, self.token_hop_len * self.stream_scale_factor)
 +                    token_hop_len = min(self.token_max_hop_len, token_hop_len * self.stream_scale_factor)
+@@ -365,10 +377,11 @@ class CosyVoice2Model(CosyVoiceModel):
+-            # deal with remain tokens, make sure inference remain token len equals token_hop_len when cache_speech is not None
+-            this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
+-            this_tts_speech = self.token2wav(token=this_tts_speech_token,
+-                                             prompt_token=flow_prompt_speech_token,
+-                                             prompt_feat=prompt_speech_feat,
+-                                             embedding=flow_embedding,
+-                                             token_offset=token_offset,
+-                                             uuid=this_uuid,
+-                                             finalize=True)
+-            yield {'tts_speech': this_tts_speech.cpu()}
++            if self.llm_cancelled_dict[this_uuid] is False:
++                # deal with remain tokens, make sure inference remain token len equals token_hop_len when cache_speech is not None
++                this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
++                this_tts_speech = self.token2wav(token=this_tts_speech_token,
++                                                 prompt_token=flow_prompt_speech_token,
++                                                 prompt_feat=prompt_speech_feat,
++                                                 embedding=flow_embedding,
++                                                 token_offset=token_offset,
++                                                 uuid=this_uuid,
++                                                 finalize=True)
++                yield {'tts_speech': this_tts_speech.cpu()}
+@@ -378,10 +391,11 @@ class CosyVoice2Model(CosyVoiceModel):
+-            this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
+-            this_tts_speech = self.token2wav(token=this_tts_speech_token,
+-                                             prompt_token=flow_prompt_speech_token,
+-                                             prompt_feat=prompt_speech_feat,
+-                                             embedding=flow_embedding,
+-                                             token_offset=0,
+-                                             uuid=this_uuid,
+-                                             finalize=True,
+-                                             speed=speed)
+-            yield {'tts_speech': this_tts_speech.cpu()}
++            if self.llm_cancelled_dict[this_uuid] is False:
++                this_tts_speech_token = torch.tensor(self.tts_speech_token_dict[this_uuid]).unsqueeze(dim=0)
++                this_tts_speech = self.token2wav(token=this_tts_speech_token,
++                                                 prompt_token=flow_prompt_speech_token,
++                                                 prompt_feat=prompt_speech_feat,
++                                                 embedding=flow_embedding,
++                                                 token_offset=0,
++                                                 uuid=this_uuid,
++                                                 finalize=True,
++                                                 speed=speed)
++                yield {'tts_speech': this_tts_speech.cpu()}
+@@ -390,0 +405 @@ class CosyVoice2Model(CosyVoiceModel):
++            self.llm_cancelled_dict.pop(this_uuid)
+@@ -420,0 +436 @@ class CosyVoice3Model(CosyVoice2Model):
++        self.llm_cancelled_dict = {}
 diff --git a/cosyvoice/hifigan/generator.py b/cosyvoice/hifigan/generator.py
 index bbc2a21..b0b9df1 100644
 --- a/cosyvoice/hifigan/generator.py

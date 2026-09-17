@@ -1,6 +1,7 @@
 """CPU-only tests for the bounded text bridge and CosyVoice3 engine."""
 
 import json
+from concurrent.futures import CancelledError
 from pathlib import Path
 import sys
 import threading
@@ -100,7 +101,8 @@ class TextStreamTest(unittest.TestCase):
         completed = threading.Event()
 
         def consume():
-            self.assertEqual(list(stream), [])
+            with self.assertRaises(CancelledError):
+                list(stream)
             completed.set()
 
         thread = threading.Thread(target=consume)

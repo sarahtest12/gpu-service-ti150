@@ -26,7 +26,8 @@ class TtsContractTest(unittest.TestCase):
         text = (REPO / "contracts/tts-websocket.md").read_text()
         for value in ("fun-cosyvoice3-0.5b-2512", "aishell3-female", "24000",
                       "input.text", "input.done", "session.close", "session.created",
-                      "audio.start", "audio.done", "pcm_s16le", "16384", "4096",
+                      "audio.start", "audio.done", "response.cancel",
+                      "response.cancelled", "invalid_utterance", "pcm_s16le", "16384", "4096",
                       "300", "3600", "tts_time_to_first_token_seconds"):
             with self.subTest(value=value):
                 self.assertIn(value, text)

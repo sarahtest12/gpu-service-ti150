@@ -53,6 +53,18 @@ AISHELL-3 的 Apache-2.0 女声 SSB0005，服务端启动时注册，客户端�
 `input.done` 只结束当前文本生成器，不关闭 WebSocket。它只能在至少一个 `input.text` 之后发送；
 发送后必须等待匹配的 `audio.done`，再开始下一条 utterance。
 
+取消当前活动 utterance：
+
+```json
+{"type":"response.cancel","utterance_id":"utt_0123456789abcdef01234567"}
+```
+
+`response.cancel` 可在 `input.done` 前后发送，但必须引用当前 `audio.start` 返回的
+`utterance_id`。服务端收到后停止接受该 utterance 的文本、停止下发后续 PCM，并清理模型生成器；
+已经进入 GPU 的单次计算不能被抢占，服务端完成清理后才返回 `response.cancelled`。客户端还应立即
+丢弃本地尚未播放的该 utterance 音频。错误的 `utterance_id` 返回非致命 `invalid_utterance`，
+当前 utterance 继续运行；没有活动 utterance 时返回非致命 `invalid_state`。
+
 在两个 utterance 之间正常关闭会话：
 
 ```json
@@ -83,6 +95,15 @@ AISHELL-3 的 Apache-2.0 女声 SSB0005，服务端启动时注册，客户端�
 `utterance_id` 必须与前面的 `audio.start` 一致。收到 `audio.done` 后，同一连接可顺序发送下一条
 `input.text`，服务端会分配新的 `utterance_id`。
 
+取消完成后，服务端发送：
+
+```json
+{"type":"response.cancelled","utterance_id":"utt_0123456789abcdef01234567"}
+```
+
+`response.cancelled` 是取消完成的唯一确认；该 utterance 不再发送 `audio.done`。收到确认后，
+同一 WebSocket 回到空闲状态，可以发送新的 `input.text`。
+
 ## 错误事件
 
 协议和推理错误使用 JSON 文本帧：
@@ -106,14 +127,16 @@ AISHELL-3 的 Apache-2.0 女声 SSB0005，服务端启动时注册，客户端�
 | `input_chunk_too_long` | 单个文本块超过 1024 字符 | false |
 | `input_too_long` | utterance 合计超过 4096 字符；服务端取消当前 utterance | false |
 | `invalid_state` | 事件不适用于当前状态 | false |
+| `invalid_utterance` | 取消事件的 ID 不匹配当前 utterance；当前任务不受影响 | false |
 | `input_backpressure` | 有界文本队列在 30 秒内不能接收新块 | false |
 | `output_timeout` | 向客户端发送 PCM 或控制帧持续阻塞超过 30 秒 | true |
 | `message_too_large` | 单个 WebSocket 文本消息超过 16384 字节 | false |
 | `input_timeout` | 活跃 utterance 等待后续文本超过 300 秒 | true |
 | `inference_failed` | 模型或输出处理失败 | true |
 
-空闲状态的 `fatal=false` 错误不改变状态；活跃状态的 `fatal=false` 错误会取消当前 utterance，
-清理生成器并回到空闲状态，不再发送该 utterance 的 `audio.done`，客户端可开始下一条。
+空闲状态的 `fatal=false` 错误不改变状态；`invalid_utterance` 也不改变当前活动任务。其他活跃状态的
+`fatal=false` 错误会取消当前 utterance，清理生成器并回到空闲状态，不再发送该 utterance 的
+`audio.done`，客户端可开始下一条。
 `fatal=true` 后服务端使用 close code 1011 关闭连接。服务端错误不包含输入文本、
 参考音频路径、内部 key 或堆栈。
 
@@ -125,8 +148,10 @@ stateDiagram-v2
     Idle --> Active: input.text / audio.start
     Active --> InputDone: input.done
     Active --> Active: input.text / binary PCM
+    Active --> Idle: response.cancel / response.cancelled
     Active --> Idle: nonfatal error / cancel
     InputDone --> InputDone: binary PCM
+    InputDone --> Idle: response.cancel / response.cancelled
     InputDone --> Idle: nonfatal error / cancel
     InputDone --> Idle: audio.done
     Idle --> [*]: session.close

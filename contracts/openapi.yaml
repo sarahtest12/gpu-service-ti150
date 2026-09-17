@@ -1,7 +1,7 @@
 openapi: 3.1.1
 info:
   title: BI-V150 算法服务接口契约
-  version: 0.7.0
+  version: 0.8.0
   description: |
     CPU Web 后端访问 GPU 主机的统一 HTTP/WebSocket 契约。所有路径共用 TLS 端口和 GPU_API_KEY。
     x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
@@ -440,8 +440,9 @@ paths:
         使用 WebSocket Upgrade 建立长连接。握手携带统一 Authorization Bearer key；网关将其
         替换为 TTS 内部 key。连接固定使用 fun-cosyvoice3-0.5b-2512、aishell3-female 和
         24000 Hz 单声道 PCM S16LE。客户端可持续发送 input.text，服务端可在 input.done 前返回
-        二进制 PCM；同一连接在 audio.done 后可顺序处理下一条 utterance。完整消息、状态、限制
-        和错误语义见 x-websocket-contract。OpenAPI 客户端生成器通常不能生成该双向消息协议。
+        二进制 PCM；同一连接在 audio.done 后可顺序处理下一条 utterance。活动 utterance 可通过
+        response.cancel 取消，收到 response.cancelled 后复用连接。完整消息、状态、限制和错误语义
+        见 x-websocket-contract。OpenAPI 客户端生成器通常不能生成该双向消息协议。
       responses:
         '101':
           description: WebSocket 协议升级成功；后续帧遵循独立消息契约。

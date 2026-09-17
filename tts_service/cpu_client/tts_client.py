@@ -98,8 +98,13 @@ class TtsRealtimeClient:
             cafile=str(Path(ca_file)) if ca_file is not None else None,
         )
         self._state_lock = threading.Lock()
+        self._send_lock = threading.Lock()
         self._connection = None
         self._active_token = None
+        self._active_utterance_id = None
+        self._active_source = None
+        self._active_cancel_event = None
+        self._cancel_requested = False
         self.session = None
 
     def connect(self):
@@ -156,6 +161,8 @@ class TtsRealtimeClient:
         """Yield 24 kHz mono PCM S16LE while text chunks are still arriving."""
         def generate():
             token = object()
+            source = text_chunks if isinstance(text_chunks, TtsTextInput) else None
+            cancel_event = threading.Event()
             with self._state_lock:
                 connection = self._connection
                 if connection is None:
@@ -163,10 +170,13 @@ class TtsRealtimeClient:
                 if self._active_token is not None:
                     raise RuntimeError("a TTS utterance is already active on this connection")
                 self._active_token = token
+                self._active_utterance_id = None
+                self._active_source = source
+                self._active_cancel_event = cancel_event
+                self._cancel_requested = False
             sender_errors = []
             sender = None
             completed = False
-            source = text_chunks if isinstance(text_chunks, TtsTextInput) else None
             try:
                 if source is None and (isinstance(text_chunks, (str, bytes))
                                        or not isinstance(text_chunks, Sequence)):
@@ -186,10 +196,12 @@ class TtsRealtimeClient:
                     try:
                         self._send_text(connection, first)
                         for value in iterator:
+                            if cancel_event.is_set():
+                                return
                             self._send_text(connection, self._validate_text(value))
-                        if source is not None and source.cancelled:
+                        if cancel_event.is_set() or (source is not None and source.cancelled):
                             return
-                        connection.send(json.dumps({"type": "input.done"}))
+                        self._send_event(connection, {"type": "input.done"})
                     except Exception as error:
                         sender_errors.append(error)
                         try:
@@ -224,10 +236,26 @@ class TtsRealtimeClient:
                         utterance_id = event.get("utterance_id")
                         if not isinstance(utterance_id, str) or not utterance_id:
                             raise RuntimeError("TTS returned an invalid audio.start event")
+                        with self._state_lock:
+                            if self._active_token is token:
+                                self._active_utterance_id = utterance_id
                         started = True
                         continue
                     if (event.get("type") == "audio.done" and started
                             and event.get("utterance_id") == utterance_id):
+                        sender.join(timeout=self.timeout_seconds)
+                        if sender.is_alive():
+                            raise RuntimeError("TTS text sender did not finish")
+                        if sender_errors:
+                            raise sender_errors[0]
+                        completed = True
+                        return
+                    if (event.get("type") == "response.cancelled" and started
+                            and event.get("utterance_id") == utterance_id):
+                        with self._state_lock:
+                            requested = (self._active_token is token and self._cancel_requested)
+                        if not requested:
+                            raise RuntimeError("TTS returned an unexpected cancellation")
                         sender.join(timeout=self.timeout_seconds)
                         if sender.is_alive():
                             raise RuntimeError("TTS text sender did not finish")
@@ -252,8 +280,40 @@ class TtsRealtimeClient:
                 with self._state_lock:
                     if self._active_token is token:
                         self._active_token = None
+                        self._active_utterance_id = None
+                        self._active_source = None
+                        self._active_cancel_event = None
+                        self._cancel_requested = False
 
         return generate()
+
+    def cancel_active(self):
+        """Cancel the active utterance while keeping the WebSocket reusable."""
+        with self._state_lock:
+            connection = self._connection
+            if connection is None:
+                raise RuntimeError("TTS client is not connected")
+            if self._active_token is None:
+                raise RuntimeError("no TTS utterance is active")
+            utterance_id = self._active_utterance_id
+            if utterance_id is None:
+                raise RuntimeError("the active TTS utterance has not started")
+            if self._cancel_requested:
+                raise RuntimeError("TTS cancellation is already pending")
+            source = self._active_source
+            cancel_event = self._active_cancel_event
+            self._cancel_requested = True
+            cancel_event.set()
+        if source is not None:
+            source.cancel()
+        try:
+            self._send_event(connection, {
+                "type": "response.cancel",
+                "utterance_id": utterance_id,
+            })
+        except (ConnectionClosed, OSError):
+            self._disconnect(connection)
+            raise RuntimeError("TTS connection failed during cancellation") from None
 
     def close(self):
         with self._state_lock:
@@ -263,7 +323,7 @@ class TtsRealtimeClient:
             return
         try:
             if not active:
-                connection.send(json.dumps({"type": "session.close"}))
+                self._send_event(connection, {"type": "session.close"})
         except (ConnectionClosed, OSError):
             pass
         finally:
@@ -275,9 +335,12 @@ class TtsRealtimeClient:
     def __exit__(self, exc_type, exc_value, traceback):
         self.close()
 
-    @staticmethod
-    def _send_text(connection, text):
-        connection.send(json.dumps({"type": "input.text", "text": text}, ensure_ascii=False))
+    def _send_text(self, connection, text):
+        self._send_event(connection, {"type": "input.text", "text": text})
+
+    def _send_event(self, connection, event):
+        with self._send_lock:
+            connection.send(json.dumps(event, ensure_ascii=False))
 
     def _receive_event(self, connection):
         try:

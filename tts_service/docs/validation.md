@@ -139,3 +139,14 @@ SHA-256 为 `20ea74f58ef0ef7ff9ff5928b97451915dbcdfbc662aa6518eee18935be6f7d9`�
 
 最终 HEAD 重启后的公共入口连通性复验首 PCM 为 4.346897 秒，输出 328320 字节 PCM，总耗时
 7.524652 秒；服务完成后仍为 `ready: true`。
+
+## 活动 utterance 取消验证
+
+2026-09-17 增加带 `utterance_id` 的 `response.cancel`。文本桥接以取消异常中止 CosyVoice3 的
+双流 LLM 迭代，固定运行时补丁跳过剩余解码和最终声码器收尾；已经进入 GPU 的单次计算仍自然
+结束。服务端完成清理后返回 `response.cancelled`，不发送该 utterance 的 `audio.done`。
+
+统一 TLS/WSS 入口的真实客户端先收到 51840 字节首段 PCM，再发出取消；0.108240 秒后收到取消
+确认，取消请求后没有收到 PCM。随后在同一连接上完成第二条合成，得到 430080 字节 PCM，总耗时
+9.048132 秒。TTS 54 项测试、网关 15 项协议测试、`service.py check`、源码补丁反向校验和
+`git diff --check` 均通过；最终进程 PID 2420589 为 `ready: true`，本轮日志无错误或异常堆栈。

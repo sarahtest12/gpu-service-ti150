@@ -90,6 +90,10 @@ class TtsRealtimeClientTest(unittest.TestCase):
                     connection.send(json.dumps({"type": "audio.done",
                                                 "utterance_id": current_id}))
                     current_id = None
+                elif event["type"] == "response.cancel" and fixture.mode == "normal":
+                    connection.send(json.dumps({"type": "response.cancelled",
+                                                "utterance_id": current_id}))
+                    current_id = None
 
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain(self.cert, self.key)
@@ -144,6 +148,24 @@ class TtsRealtimeClientTest(unittest.TestCase):
                           "input.text", "input.done", "session.close"])
         producer.join(timeout=1)
         self.assertFalse(producer.is_alive())
+
+    def test_cancels_active_synthesis_and_reuses_the_connection(self):
+        text_input = TtsTextInput()
+        text_input.append("这段播报会被取消。")
+
+        with self.client() as client:
+            audio = client.synthesize(text_input)
+            self.assertEqual(next(audio), b"\x01\x00\x02\x00")
+            client.cancel_active()
+            self.assertEqual(list(audio), [])
+            self.assertTrue(text_input.cancelled)
+            self.assertTrue(b"".join(client.synthesize(["取消后继续播报。"])))
+
+        self.assertEqual(self.connections, 1)
+        self.assertEqual([event["type"] for event in self.messages], [
+            "input.text", "response.cancel", "input.text", "input.done", "session.close",
+        ])
+        self.assertEqual(self.messages[1]["utterance_id"], "utt-1")
 
     def test_rejects_unsupported_session_audio_metadata(self):
         self.mode = "bad_metadata"
