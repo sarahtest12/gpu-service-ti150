@@ -160,6 +160,9 @@ FIFO。等待队列最多 8 段、原始文本合计最多 4096 个字符；活�
 模型内部先调用原生 `frontend.text_normalize(text, split=True)`。若原生结果仍包含无标点超长
 子段，再优先按逗号或空白切分，最后按中文字符或英文 tokenizer token 边界硬切到约 80 个单位。
 这些内部子段不改变外部 `segment_id`，只产生一组 `audio.start` 和 `audio.done`。
+归一化后不含任何字母或数字的纯标点/Markdown 分段仍按 FIFO 完成，但不会调用模型：服务发送
+`audio.start` 后直接发送 `audio.done`，中间没有二进制 PCM，以免 speech-token 模型为标点生成
+额外短语。含至少一个汉字、拉丁字母或数字的短句正常合成。
 
 取消只能针对已经发送 `audio.start` 的当前活动段：
 

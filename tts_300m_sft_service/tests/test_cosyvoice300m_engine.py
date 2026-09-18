@@ -158,6 +158,16 @@ class CosyVoice300MEngineTest(unittest.TestCase):
         self.assertEqual(self.engine.subdivide("原始输入"), ["第一句。", "第二句！"])
         self.assertEqual(self.model.frontend.calls, [("原始输入", True)])
 
+    def test_does_not_synthesize_normalized_punctuation_only_parts(self):
+        self.model.frontend.native_parts = ["。", "，：！？—…"]
+
+        self.assertEqual(self.engine.subdivide("纯标点"), [])
+        self.assertEqual(
+            list(self.engine.synthesize_segment("纯标点", "request", "seg-punctuation")),
+            [],
+        )
+        self.assertEqual(self.model.calls, [])
+
     def test_pure_arabic_numbers_use_the_chinese_normalizer(self):
         self.assertEqual(self.engine.subdivide("123"), ["一百二十三"])
         self.assertEqual(self.model.frontend.zh_tn_model.calls, ["123"])

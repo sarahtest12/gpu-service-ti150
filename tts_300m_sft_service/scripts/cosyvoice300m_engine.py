@@ -102,10 +102,15 @@ class CosyVoice300MEngine:
             raise ValueError("text normalization produced an empty segment")
         result = []
         for part in native:
+            # The v1 speech-token LLM hallucinates short utterances for inputs
+            # such as a bare full stop or Markdown punctuation. Keep the
+            # accepted FIFO item, but complete it without invoking the model.
+            if not any(character.isalnum() for character in part):
+                continue
             result.extend(self._split_to_units(
                 part, self.cfg["model_segment_units"],
             ))
-        if not result or any(not part for part in result):
+        if any(not part for part in result):
             raise ValueError("text normalization produced an empty segment")
         return result
 

@@ -74,9 +74,11 @@ python3 gateway/service.py reload --service gateway
 {"type":"input.segment","segment_id":"reply-1-seg-1","text":"第一句话。"}
 ```
 
-服务依次返回 `input.accepted`、`audio.start`、一个或多个二进制 PCM 帧、`audio.done`。单段最多
+服务依次返回 `input.accepted`、`audio.start`、零个或多个二进制 PCM 帧、`audio.done`。单段最多
 2000 个 Unicode 字符；等待队列最多 8 段和 4096 字符，活动段不计入。超过模型内部长度的文本
 先使用原生 `text_normalize(split=True)`，仍过长时按约 80 个单元继续切分。
+归一化后只剩标点或 Markdown 符号的分段会正常返回 `audio.start` 和 `audio.done`，但没有 PCM，
+避免模型把纯标点幻觉成额外尾音。
 
 活动段可用 `response.cancel` 取消。服务会清空等待队列、排空当前不可抢占的厂商生成器，再返回
 `response.cancelled`；收到确认前不能提交新段。确认后 WebSocket 可复用。实测取消清理可能需要

@@ -202,8 +202,8 @@ TTS 契约版本升为 `1.1.0`。公开入口仍为 `WSS /tts/v1/realtime`，输
 
 | 校验 | 结果 |
 | --- | --- |
-| SFT 服务、状态机、取消与 CPU 客户端 | 54 项通过 |
-| Instruct 与 CosyVoice3 回归 | 各 54 项通过 |
+| SFT 服务、状态机、取消与 CPU 客户端 | 55 项通过 |
+| Instruct 与 CosyVoice3 回归 | 55 项 / 54 项通过 |
 | 网关项目选择、TLS/WebSocket 与路由 | 共 22 项：18 项通过，4 项显式真机集成测试跳过 |
 | 监控测试 / OpenAPI 3.1.1 | 6 项通过 / 通过 |
 | 真实公开 WSS、数字读法、取消、日志脱敏 | 通过 |
@@ -214,3 +214,8 @@ TTS 契约版本升为 `1.1.0`。公开入口仍为 `WSS /tts/v1/realtime`，输
 快照中 TTS 为 `running`、2254.438 MB，最近 60 秒 GPU 首 token 平均 26.742 ms、P95 39 ms。
 完整真机结果见
 [`tts_300m_sft_service/docs/validation.md`](../tts_300m_sft_service/docs/validation.md)。
+
+随后修复纯标点被 300M speech-token 模型合成为额外短语的问题。真实 SFT 探针确认句号、冒号、
+感叹号会分别产生可被 ASR 识别为“嗯”“一打”“可以”的音频；正常正文没有额外转写。SFT 与
+Instruct 现在都会跳过归一化后不含字母或数字的内部子段。公开 WSS 复验中纯标点仍按 FIFO 返回
+`audio.start`、`audio.done`，PCM 为 0 字节；同一连接的后续正常短句成功返回 102912 字节 PCM。
