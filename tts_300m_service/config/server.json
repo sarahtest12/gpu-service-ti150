@@ -17,7 +17,7 @@
   "device": 0,
   "sample_rate_hz": 22050,
   "voice_id": "中文女",
-  "voices": {
+  "checkpoint_speakers": {
     "中文女": "Chinese",
     "中文男": "Chinese",
     "粤语女": "Cantonese",
@@ -26,7 +26,10 @@
     "英文男": "English",
     "韩语女": "Korean"
   },
-  "instruction": "用自然、清晰、中性的语气播报。",
+  "inference_mode": "instruct",
+  "instruction": "Speak in a natural, clear, and neutral tone.",
+  "random_seed": 42,
+  "number_reading": "chinese",
   "max_segment_characters": 2000,
   "max_queued_segments": 8,
   "max_queued_characters": 4096,

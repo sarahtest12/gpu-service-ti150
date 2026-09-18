@@ -21,7 +21,7 @@ LOG = logging.getLogger("tts-300m-service")
 
 
 class VendorPayloadFilter(logging.Filter):
-    """Remove vendor records that include submitted text or the fixed instruction."""
+    """Remove vendor records that include submitted synthesis text."""
 
     def filter(self, record):
         message = record.getMessage()
@@ -52,14 +52,18 @@ def load_runtime_config(path):
 
 def load_engine(cfg):
     from cosyvoice.cli.cosyvoice import CosyVoice
+    from cosyvoice.utils.common import set_all_random_seed
 
     model = CosyVoice(
         cfg["model"], load_jit=cfg["load_jit"],
         load_onnx=cfg["load_onnx"], fp16=cfg["fp16"],
     )
-    if set(model.list_avaliable_spks()) != set(cfg["voices"]):
+    if set(model.list_avaliable_spks()) != set(cfg["checkpoint_speakers"]):
         raise RuntimeError("300M checkpoint speaker metadata mismatch")
-    return CosyVoice300MEngine(model, cfg)
+    if cfg["number_reading"] == "chinese" and not hasattr(
+            model.frontend, "zh_tn_model"):
+        raise RuntimeError("Chinese number normalizer is unavailable")
+    return CosyVoice300MEngine(model, cfg, set_all_random_seed)
 
 
 def create_app(engine, cfg, token):

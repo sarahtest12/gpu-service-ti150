@@ -58,7 +58,7 @@ REQUIRED_MODEL_FILES = (
 SOURCE_FILES = {
     "cosyvoice/cli/cosyvoice.py", "cosyvoice/cli/frontend.py", "cosyvoice/cli/model.py",
 }
-VOICES = {
+CHECKPOINT_SPEAKERS = {
     "中文女": "Chinese", "中文男": "Chinese", "粤语女": "Cantonese",
     "日语男": "Japanese", "英文女": "English", "英文男": "English",
     "韩语女": "Korean",
@@ -114,13 +114,18 @@ def config(*, require_artifacts=True):
         ("model_segment_units", 10000, False), ("max_message_bytes", 1024 * 1024, False),
         ("session_idle_timeout_seconds", 86400, False),
         ("output_timeout_seconds", 300, False), ("max_concurrency", 4, False),
-        ("minimum_free_memory_mb", 32768, False),
+        ("minimum_free_memory_mb", 32768, False), ("random_seed", 2**32 - 1, True),
     ):
         positive(cfg, key, maximum, allow_zero=allow_zero)
     if (cfg["model_name"] != "cosyvoice-300m-instruct"
             or cfg["device"] != 0 or cfg["sample_rate_hz"] != 22050
-            or cfg["voice_id"] != "中文女" or cfg.get("voices") != VOICES
-            or cfg.get("instruction") != "用自然、清晰、中性的语气播报。"
+            or cfg["voice_id"] != "中文女"
+            or cfg.get("checkpoint_speakers") != CHECKPOINT_SPEAKERS
+            or "voices" in cfg
+            or cfg.get("inference_mode") != "instruct"
+            or cfg.get("instruction") != "Speak in a natural, clear, and neutral tone."
+            or cfg["random_seed"] != 42
+            or cfg.get("number_reading") != "chinese"
             or cfg["max_segment_characters"] != 2000
             or cfg["max_queued_segments"] != 8
             or cfg["max_queued_characters"] != 4096

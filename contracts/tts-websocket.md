@@ -15,7 +15,10 @@ key 后，用 TTS 内部 key 访问 `127.0.0.1:8004/realtime`，不会把公开 
 | `cosyvoice-300m-instruct` | `中文女` | 22050 Hz、单声道、little-endian `pcm_s16le` |
 
 客户端不能传模型、音色、参考音频、指令或速度。CosyVoice3 的固定参考音色来自 AISHELL-3
-Apache-2.0 女声 SSB0005；300M 固定使用指令“用自然、清晰、中性的语气播报。”。
+Apache-2.0 女声 SSB0005；300M 固定使用 `中文女`、英文 instruction
+`Speak in a natural, clear, and neutral tone.` 和随机种子 42。300M 在分段前对阿拉伯数字执行
+中文文本规范化；日期、金额、小数和百分比等按上下文展开，纯数字或英文混合文本也不会进入
+英文数字读法。
 
 ## 公共握手和帧
 

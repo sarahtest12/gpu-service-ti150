@@ -13,15 +13,17 @@ from tts_metrics import TTS_TTFT
 
 LOG = logging.getLogger("tts-service")
 CHINESE = re.compile(r"[\u4e00-\u9fff]")
+ARABIC_DIGIT = re.compile(r"[0-9]")
 FALLBACK_BOUNDARY = re.compile(r"[，,\s]")
 
 
 class CosyVoice300MEngine:
     """Own one 300M model and expose bounded fixed-voice PCM generation."""
 
-    def __init__(self, model, cfg):
+    def __init__(self, model, cfg, set_random_seed):
         self.model = model
         self.cfg = cfg
+        self._set_random_seed = set_random_seed
         self._slots = threading.BoundedSemaphore(cfg["max_concurrency"])
         self._metric_lock = threading.Lock()
         self._measure_first_token = False
@@ -93,6 +95,8 @@ class CosyVoice300MEngine:
         return parts
 
     def subdivide(self, text):
+        if ARABIC_DIGIT.search(text) and not CHINESE.search(text):
+            text = self.model.frontend.zh_tn_model.normalize(text)
         native = list(self.model.frontend.text_normalize(text, split=True))
         if not native or any(not part for part in native):
             raise ValueError("text normalization produced an empty segment")
@@ -118,6 +122,7 @@ class CosyVoice300MEngine:
 
     def synthesize_segment(self, text, request_id, segment_id):
         """Yield PCM and drain the active vendor generator before returning."""
+        self._set_random_seed(self.cfg["random_seed"])
         with self._metric_lock:
             self._measure_first_token = True
         try:

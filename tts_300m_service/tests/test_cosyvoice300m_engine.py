@@ -40,11 +40,21 @@ class FakeTokenizer:
         return list(text)
 
 
+class FakeChineseNormalizer:
+    def __init__(self):
+        self.calls = []
+
+    def normalize(self, text):
+        self.calls.append(text)
+        return text.replace("123", "一百二十三")
+
+
 class FakeFrontend:
     def __init__(self):
         self.tokenizer = FakeTokenizer()
         self.native_parts = None
         self.calls = []
+        self.zh_tn_model = FakeChineseNormalizer()
 
     def text_normalize(self, text, split=True):
         self.calls.append((text, split))
@@ -89,11 +99,14 @@ def configuration():
     cfg.update({
         "backend": "cosyvoice300m",
         "voice_id": "中文女",
-        "voices": {
+        "checkpoint_speakers": {
             "中文女": "Chinese",
             "中文男": "Chinese",
         },
-        "instruction": "用自然、清晰、中性的语气播报。",
+        "inference_mode": "instruct",
+        "instruction": "Speak in a natural, clear, and neutral tone.",
+        "random_seed": 42,
+        "number_reading": "chinese",
         "model_segment_units": 80,
         "max_concurrency": 1,
         "model": "/models/CosyVoice-300M-Instruct",
@@ -107,7 +120,8 @@ def configuration():
 class CosyVoice300MEngineTest(unittest.TestCase):
     def setUp(self):
         self.model = FakeModel()
-        self.engine = CosyVoice300MEngine(self.model, configuration())
+        self.seeds = []
+        self.engine = CosyVoice300MEngine(self.model, configuration(), self.seeds.append)
 
     @staticmethod
     def metric_count():
@@ -118,14 +132,15 @@ class CosyVoice300MEngineTest(unittest.TestCase):
             if sample.name == "tts_time_to_first_token_seconds_count"
         )
 
-    def test_uses_fixed_voice_instruction_and_streaming_output(self):
+    def test_uses_fixed_voice_instruction_seed_and_streaming_output(self):
         pcm = b"".join(self.engine.synthesize_segment(
             "第一句。", "request", "seg-001",
         ))
 
         self.assertEqual(self.model.calls, [
-            ("第一句。", "中文女", "用自然、清晰、中性的语气播报。", True, 1.0),
+            ("第一句。", "中文女", "Speak in a natural, clear, and neutral tone.", True, 1.0),
         ])
+        self.assertEqual(self.seeds, [42])
         self.assertEqual(
             np.frombuffer(pcm, dtype="<i2").tolist(),
             [-32767, 0, 32767, 8192],
@@ -143,6 +158,16 @@ class CosyVoice300MEngineTest(unittest.TestCase):
 
         self.assertEqual(self.engine.subdivide("原始输入"), ["第一句。", "第二句！"])
         self.assertEqual(self.model.frontend.calls, [("原始输入", True)])
+
+    def test_pure_arabic_numbers_use_the_chinese_normalizer(self):
+        self.assertEqual(self.engine.subdivide("123"), ["一百二十三"])
+        self.assertEqual(self.model.frontend.zh_tn_model.calls, ["123"])
+        self.assertEqual(self.model.frontend.calls, [("一百二十三", True)])
+
+    def test_chinese_context_keeps_the_vendor_contextual_normalizer(self):
+        self.assertEqual(self.engine.subdivide("共有123个"), ["共有123个"])
+        self.assertEqual(self.model.frontend.zh_tn_model.calls, [])
+        self.assertEqual(self.model.frontend.calls, [("共有123个", True)])
 
     def test_hard_splits_unpunctuated_chinese_after_native_split(self):
         text = "测" * 170
@@ -217,11 +242,16 @@ class CosyVoice300MLoaderTest(unittest.TestCase):
         cosyvoice = ModuleType("cosyvoice")
         cli = ModuleType("cosyvoice.cli")
         vendor = ModuleType("cosyvoice.cli.cosyvoice")
+        utils = ModuleType("cosyvoice.utils")
+        common = ModuleType("cosyvoice.utils.common")
         vendor.CosyVoice = model_class
+        common.set_all_random_seed = lambda seed: None
         return {
             "cosyvoice": cosyvoice,
             "cosyvoice.cli": cli,
             "cosyvoice.cli.cosyvoice": vendor,
+            "cosyvoice.utils": utils,
+            "cosyvoice.utils.common": common,
         }
 
     def test_selected_300m_loader_uses_pinned_flags_and_checks_speakers(self):

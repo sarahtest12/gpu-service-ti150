@@ -10,6 +10,8 @@
 - 请求头：`Authorization: Bearer <GPU_API_KEY>`
 - 固定模型：`cosyvoice-300m-instruct`
 - 固定音色：`中文女`
+- 固定模式：Instruct；服务端使用英文 instruction 和固定随机种子，客户端不能修改
+- 数字读法：阿拉伯数字统一经过中文文本规范化；日期、金额、小数、百分比等按中文上下文展开
 - 输出：22050 Hz、单声道、little-endian PCM S16LE
 
 CPU 端先断句，然后可在前一段仍在合成时继续发送完整分段。服务按 FIFO 返回音频，不会交错

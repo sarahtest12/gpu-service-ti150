@@ -18,13 +18,21 @@ class ServiceConfigurationTest(unittest.TestCase):
         self.assertEqual(cfg["backend"], "cosyvoice300m")
         self.assertEqual(cfg["model_name"], "cosyvoice-300m-instruct")
         self.assertEqual((cfg["voice_id"], cfg["sample_rate_hz"]), ("中文女", 22050))
+        self.assertEqual(cfg["inference_mode"], "instruct")
+        self.assertEqual(cfg["instruction"], "Speak in a natural, clear, and neutral tone.")
+        self.assertEqual(cfg["random_seed"], 42)
+        self.assertEqual(cfg["number_reading"], "chinese")
+        self.assertNotIn("voices", cfg)
         self.assertEqual((cfg["max_queued_segments"], cfg["max_queued_characters"]),
                          (8, 4096))
 
     def test_rejects_non_loopback_and_changed_protocol_limits(self):
         original = json.loads(service.CONFIG.read_text())
         for change in ({"host": "0.0.0.0"}, {"max_queued_segments": 9},
-                       {"voice_id": "中文男"}, {"load_jit": False}):
+                       {"voice_id": "中文男"}, {"inference_mode": "sft"},
+                       {"random_seed": -1}, {"random_seed": 43},
+                       {"number_reading": "english"},
+                       {"instruction": "Speak naturally."}, {"load_jit": False}):
             with self.subTest(change=change), tempfile.TemporaryDirectory() as directory:
                 path = Path(directory) / "server.json"
                 path.write_text(json.dumps({**original, **change}, ensure_ascii=False))
