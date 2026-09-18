@@ -156,3 +156,35 @@ TTS 公共 HTTP 操作从 OpenAPI 和网关中删除；内部 `/health` 与 `/me
 
 真实取消测试通过统一 `/tts/v1/realtime`、公开 key、NGINX 内部 key 替换和本机 TTS 完成。测试后
 TTS 进程仍为 `ready: true`，日志没有 `ERROR` 或异常堆栈。
+
+## 独立 CosyVoice-300M 默认服务（2026-09-18）
+
+TTS 契约版本升为 `1.0.0`。CosyVoice-300M-Instruct 移到独立的 `tts_300m_service`，网关的
+`tts` 管理目标和内部 key 路径默认指向该目录。原 `tts_service` 保留 Fun-CosyVoice3 双流实现；
+两套服务共用内部端口 8004，运维时只启动其中一套。公开入口仍只有
+`WSS /tts/v1/realtime`。
+
+默认服务使用 `input.segment` 接收 CPU 已断好的完整分段，按有界 FIFO 合成 22050 Hz PCM。
+超过厂商单次处理长度的分段会在服务内部继续切分，但只记录一次外部段的 GPU 首 token 指标。
+模型、源码、JIT 制品和 Python 包均有固定校验，独立 hash-lock 环境通过 bootstrap 构建。
+
+| 校验 | 结果 |
+| --- | --- |
+| 独立 300M 服务、CPU 客户端与契约测试 | 51 项通过 |
+| 恢复后的 Fun-CosyVoice3 服务测试 | 54 项通过 |
+| 网关测试 | 17 项通过；4 项显式真机集成测试跳过 |
+| 监控测试 | 6 项通过 |
+| OpenAPI 3.1.1（`openapi-spec-validator==0.7.2`） | 通过 |
+| 独立环境、CoreX、源码、模型和 checkpoint | `service.py check` 通过 |
+| 公开 WSS 多分段 FIFO | 两段按提交顺序完成，合计 616960 字节 PCM |
+| 独立环境重启后的公开 WSS | 固定模型/音色/22050 Hz；冷首 PCM 19.710 s |
+| 最新强制监控快照 | `running`，2321.547 MB，60 秒首 token 平均 3192.349 ms、P95 4992 ms |
+| 日志脱敏 | 请求文本和固定指令均未出现；无 ERROR 或 Traceback |
+
+切换时曾因监控进程仍缓存旧 TTS 内部 key 而误报 `error`：新服务的 `/health`、`/metrics` 使用新
+key 均为 200，旧 key 均为 401。重启 monitor 使其重新读取配置后，同一个公开监控断言恢复为
+`running`。因此更换 TTS 目录或内部 key 时必须同时重启 monitor，并 reload 网关。
+
+详细的 GPU 基线、FIFO、取消和复用结果见
+[`tts_300m_service/docs/validation.md`](../tts_300m_service/docs/validation.md)。所有延迟只描述本机验收，
+不是服务等级承诺；公共监控仍只返回最近 60 秒 GPU 首 token 指标。

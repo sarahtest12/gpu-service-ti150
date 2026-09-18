@@ -1,7 +1,8 @@
 # 算法服务契约
 
 初始 VLM/YOLO 契约基线为 `88bb84a`（add gateway）。随后已部署 BGE-M3、Fun-ASR-Nano-2512
-和 Fun-CosyVoice3-0.5B-2512。
+和 Fun-CosyVoice3-0.5B-2512；统一网关当前默认使用独立的 CosyVoice-300M-Instruct 服务，原
+CosyVoice3 目录保留为可选部署。
 五路算法的监控快照已经实现；重排序模型暂不部署。
 
 优先 review [`openapi.yaml`](openapi.yaml)。它是可导入 OpenAPI 工具的 **3.1.1** 单文件，
@@ -29,7 +30,7 @@ TTS 的握手在 OpenAPI 中，文本、PCM 与状态机见 [`tts-websocket.md`]
 | HTTP POST | `/rag/v1/rerank` | 检索重排 | 预留路径，当前 404 |
 | WebSocket | `/asr/v1/realtime` | Fun-ASR-Nano 实时语音识别 | 已实现；消息契约单列 |
 | HTTP GET | `/asr/health/ready` | ASR 引擎就绪 | 已实现 |
-| WebSocket | `/tts/v1/realtime` | CosyVoice3 文本输入与 PCM 输出双向流 | 已实现；消息契约单列 |
+| WebSocket | `/tts/v1/realtime` | 默认 CosyVoice-300M 分段 FIFO 与 PCM 输出 | 已实现；消息契约单列 |
 
 RAG rerank 记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
 YOLO 普通 HTTP 单图接口也尚未定义。监控的 RAG 耗时只覆盖现有 embedding 请求，不代表 rerank 已部署。
@@ -64,9 +65,9 @@ YOLO 口径为 GPU 主机端每帧模型推理耗时，排除预处理、排队�
 VLM 为 GPU 端首 token 延迟，包含排队，排除 CPU 与 GPU 间网络。
 RAG 为 HTTP 请求在 GPU 主机应用中的完整处理耗时，不等同于单个 GPU kernel 的执行时间。
 ASR 以每次 partial/final 解码轮次为样本，从音频上下文提交给 GPU 解码器计时，到首个文本 token
-在 GPU 主机服务进程可见；排除音频累计、VAD 等待和网络。TTS 每个 utterance 只记录一次，
-从 `inference_bistream` 开始消费首批规范化文本 token，到首个语音 token 在 GPU 主机服务进程
-可见；排除等待客户端文本、文本队列、PCM 解码、网络和播放器缓冲，所以它不等于用户听到声音的时间。
+在 GPU 主机服务进程可见；排除音频累计、VAD 等待和网络。默认 300M TTS 每个外部分段只记录
+第一个内部子段，从该子段进入 LLM 推理到首个语音 token 可见；排除 FIFO 等待、PCM 生成、
+网络和客户端缓冲。
 
 GPU 监控接口保持单次快照 GET。CPU Web 后端使用一个后台任务每 5 秒以普通请求拉取，并通过
 自己的长连接广播，避免每个浏览器分别访问 GPU。手动刷新时，CPU 后端请求
@@ -130,16 +131,16 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 
 ## TTS 契约说明
 
-TTS 使用 `WSS /tts/v1/realtime`。客户端可持续发送多个 `input.text`，服务端可在
-`input.done` 前返回二进制 PCM；`audio.done` 表示单个 utterance 完整结束，同一连接可顺序复用。
-活动 utterance 可发送带当前 ID 的 `response.cancel`；服务端清理完成后返回
-`response.cancelled`，连接保持可用。
-模型固定为 `fun-cosyvoice3-0.5b-2512`，音色固定为 `aishell3-female`，输出固定为 24000 Hz
-单声道 PCM S16LE。完整消息、状态、错误和限制见 [`tts-websocket.md`](tts-websocket.md)。
+TTS 使用一个 `WSS /tts/v1/realtime`。默认 `tts_300m_service` 使用 `input.segment`、
+`input.accepted` 和有界 FIFO，CPU 可在当前段合成时继续提交后续段。`session.created` 固定返回
+CosyVoice-300M、`中文女` 和 22050 Hz PCM 参数。原 `tts_service` 的 CosyVoice3 增量协议仍在
+消息契约中保留，但不再是网关默认上游。完整消息、状态、错误和限制见
+[`tts-websocket.md`](tts-websocket.md)。
 
 服务与网关各限制 1 个活跃 WebSocket。客户端断开后服务端取消文本输入并清理厂商生成器；清理
-完成前新握手仍可能返回 429。部署与真实样本见 [`../tts_service/README.md`](../tts_service/README.md) 和
-[`../tts_service/docs/validation.md`](../tts_service/docs/validation.md)。
+完成前新握手仍可能返回 429。默认部署与真实样本见
+[`../tts_300m_service/README.md`](../tts_300m_service/README.md) 和
+[`../tts_300m_service/docs/validation.md`](../tts_300m_service/docs/validation.md)。
 
 ## 内部接口范围
 

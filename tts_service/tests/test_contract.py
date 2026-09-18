@@ -37,12 +37,16 @@ class TtsContractTest(unittest.TestCase):
                  REPO / "gateway/README.md", REPO / "tts_service/README.md",
                  REPO / "monitor_service/README.md")
         forbidden = ("/tts/v1/audio/speech", "/tts/v1/audio/voices", "/tts/health/ready",
-                     "cosyvoice-300m-instruct", "22050 Hz", "TTS 使用每个 HTTP 请求")
+                     "TTS 使用每个 HTTP 请求")
         for path in files:
             text = path.read_text()
             for value in forbidden:
                 with self.subTest(path=path.name, value=value):
                     self.assertNotIn(value, text)
+
+        legacy = (REPO / "tts_service/README.md").read_text()
+        self.assertNotIn("cosyvoice-300m-instruct", legacy)
+        self.assertNotIn("22050 Hz", legacy)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,2 @@
+# CPU-only WebSocket client; no torch or accelerator SDK is required.
+websockets==15.0.1

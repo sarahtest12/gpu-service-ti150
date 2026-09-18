@@ -22,6 +22,12 @@ ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
 RUNTIME = ROOT / "runtime"
 NGINX = ROOT / "runtime/nginx/sbin/nginx"
+SERVICE_PROJECTS = {
+    "vlm": "vlm_service",
+    "rag": "rag_service",
+    "asr": "asr_service",
+    "tts": "tts_300m_service",
+}
 
 
 def write_private(path, text):
@@ -96,13 +102,15 @@ def command_for(name, cfg):
     if name in ("vlm", "rag", "asr", "tts"):
         if name not in cfg:
             raise ValueError(f"{name} is not configured")
-        project = REPO / f"{name}_service"
+        project = REPO / SERVICE_PROJECTS[name]
         local = json.loads((project / "config/server.json").read_text())
         host = f"[{local['host']}]" if ":" in local["host"] else local["host"]
         if f"{host}:{local['port']}" != cfg[name]["address"]:
             raise ValueError(f"{name} listen address must match the gateway loopback upstream")
         if cfg[name]["api_key_file"] != project / "runtime/api_key":
-            raise ValueError(f"{name} upstream key must point to {name}_service/runtime/api_key")
+            raise ValueError(
+                f"{name} upstream key must point to {project.name}/runtime/api_key"
+            )
         return [str(project / ".venv/bin/python"), "scripts/service.py", "run"], env, project
     project = REPO / "yolov5v70-service"
     host, port = cfg["yolo"]["address"].rsplit(":", 1)

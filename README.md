@@ -14,20 +14,21 @@ CPU 服务器部署 Web 应用与业务逻辑，GPU 主机通过统一 HTTPS 入
 | RAG 文本向量 | `/rag/v1/embeddings`，模型 `bge-m3` | `127.0.0.1:8002` |
 | RAG 模型列表 | `/rag/v1/models` | 同上 |
 | ASR 实时语音识别 | `wss://GPU_HOST:8443/asr/v1/realtime`，模型 `Fun-ASR-Nano-2512` | `127.0.0.1:8003` |
-| TTS 双向流式语音合成 | `wss://GPU_HOST:8443/tts/v1/realtime`，模型 `fun-cosyvoice3-0.5b-2512` | `127.0.0.1:8004` |
+| TTS 流式语音合成 | `wss://GPU_HOST:8443/tts/v1/realtime`，默认 `CosyVoice-300M-Instruct` 分段 FIFO | `127.0.0.1:8004` |
 | 性能监控快照 | `/monitor/v1/overview` | `127.0.0.1:8005` |
 | 服务状态 | `/health/live`、VLM/YOLO/RAG/ASR 就绪路径及 `/monitor/v1/overview` | TTS 由监控读取内部健康状态 |
 
 状态接口也需要统一 key。RAG 当前提供 BGE-M3 的 1024 维文本向量，不部署 reranker；
 文档分块、向量库、召回和权限由 CPU 项目实现。YOLO 保留原有 gRPC 契约；ASR 只提供实时
-WebSocket，不提供完整文件转写接口。TTS 使用服务端固定的 `aishell3-female` 音色，返回
-24000 Hz 单声道 PCM S16LE；客户端可持续追加文本并同时接收音频。普通 HTTP 单图接口和
+WebSocket，不提供完整文件转写接口。默认 TTS 接收 CPU 断好的分段并按 FIFO 合成，返回
+22050 Hz 单声道 PCM S16LE；原 `tts_service` 的 CosyVoice3 双流实现保留，但网关默认启动独立的
+`tts_300m_service`。普通 HTTP 单图接口和
 `/rag/v1/rerank` 尚未实现，当前返回 404。
 
 ## 部署与管理
 
 1. 按 [网关说明](gateway/README.md) 构建 NGINX、配置证书和初始化凭据。
-2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md)、[ASR 说明](asr_service/README.md)、[TTS 说明](tts_service/README.md) 和 [监控说明](monitor_service/README.md) 准备各自服务。
+2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md)、[ASR 说明](asr_service/README.md)、[默认 TTS 说明](tts_300m_service/README.md) 和 [监控说明](monitor_service/README.md) 准备各自服务。
 3. 从仓库根目录统一管理网关、五个算法服务和监控，共七个独立进程组：
 
 ```bash
@@ -54,7 +55,7 @@ CPU 端复制需要的算法 `cpu_client/`；YOLO 还需复制同级 `shared/`�
 
 VLM 使用 `VlmClient.stream_chat()` 或 `demo.py --stream` 逐段读取输出；
 ASR 使用 `RealtimeAsrClient` 发送麦克风 PCM 帧并同时读取可修订 partial 与 final；
-TTS 使用 `TtsRealtimeClient` 复用一条 WSS 会话，将 LLM 文本分块持续送入并同步转发 PCM；
+TTS 使用 `TtsRealtimeClient` 复用一条 WSS 会话，并行提交 CPU 已断好的完整分段并消费有序 PCM；
 监控使用 `MonitorClient.overview()` 读取定时快照，页面手动刷新时传 `refresh=True`；
 CPU Web 后端和浏览器也需逐段转发/读取，算法 key 仅保存在 CPU 后端。
 前后端应用与业务数据权限管理由 CPU 项目实现。

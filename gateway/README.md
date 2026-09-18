@@ -37,7 +37,7 @@ bootstrap 固定 NGINX 1.30.4 并校验源码 SHA-256，启用 SSL 与 HTTP/2，
 | `vlm_service/runtime/api_key` | 保留 VLM 自己的内部 key，网关注入上游请求 |
 | `rag_service/runtime/api_key` | RAG 内部 key，网关注入上游请求 |
 | `asr_service/runtime/api_key` | ASR 内部 key，网关在 WebSocket 握手时注入 |
-| `tts_service/runtime/api_key` | TTS 内部 key，网关注入上游请求 |
+| `tts_300m_service/runtime/api_key` | 默认 TTS 内部 key，网关注入上游请求 |
 | `monitor_service/runtime/api_key` | 监控内部 key，网关注入上游请求 |
 | `gateway/runtime/tls/server.crt` | 可传给 CPU 客户端信任的开发证书 |
 | `gateway/runtime/tls/server.key` | 留在 GPU 主机的 TLS 私钥 |
@@ -62,7 +62,7 @@ bash yolov5v70-service/scripts/bootstrap_corex.sh
 bash vlm_service/scripts/bootstrap.sh
 bash rag_service/scripts/bootstrap.sh
 bash asr_service/scripts/bootstrap.sh
-bash tts_service/scripts/bootstrap.sh
+bash tts_300m_service/scripts/bootstrap.sh
 python3 monitor_service/scripts/service.py check
 ```
 
@@ -71,8 +71,9 @@ YOLO 使用上述验收权重。换业务模型需更新网关配置中 `yolo.we
 并通过 YOLO 环境变量配置匹配的类别文件等参数，重新做检测验收。
 RAG 的模型配置见 `rag_service/config/server.json`，BGE-M3 在 GPU 0 以 FP16 与 YOLO 共存。
 ASR 配置见 `asr_service/config/server.json`，Fun-ASR-Nano 在 GPU 0 使用 BF16 和 vLLM 解码。
-TTS 配置见 `tts_service/config/server.json`，Fun-CosyVoice3-0.5B-2512 在 GPU 0 使用原生
-PyTorch FP16 双向流，固定 AISHELL-3 女声音色。
+默认 TTS 配置见 `tts_300m_service/config/server.json`。CosyVoice-300M-Instruct 使用 CoreX
+FP16 + JIT 分段 FIFO，在 GPU 0 运行。原 `tts_service` 已恢复为 Fun-CosyVoice3 双流服务并保留，
+但网关管理器不会默认启动它；两个目录都使用 8004，因此不能同时运行。
 VLM/RAG/ASR/TTS 的监听配置须与网关各自的上游地址一致；算法内部端口仅监听 loopback。
 删除网关配置中的 `rag` 段可不管理或转发 RAG；这不会主动停止已运行的 RAG，应先单独停止它。
 
@@ -94,6 +95,11 @@ python3 gateway/service.py start --service monitor
 python3 gateway/service.py reload --service gateway
 python3 gateway/service.py stop
 ```
+
+`--service tts` 固定管理 `tts_300m_service`。更换为保留的 CosyVoice3 属于运维配置变更，需要先
+停止当前 TTS，再同时修改 `gateway/service.py` 的项目映射和 `gateway/config/server.json` 的内部
+key 路径，启动目标服务、重启 monitor 并 reload 网关；monitor 会在启动时读取各算法内部 key，
+未重启会把新 TTS 的 401 误报为 `error`。切换期间已有连接会断开，新握手可能返回 502/504。
 
 七个服务进程组各有独立日志和状态记录。启动时模型可能仍在加载；网关可以先服务其他已就绪算法。
 `reload` 只重载网关：先验证候选配置，通过后原子替换配置并发送 HUP。失败时保留原配置，
@@ -149,7 +155,8 @@ VLM 示例：`python demo.py --config config.gateway.example.json --stream --pro
 YOLO 示例：`python demo.py --config config.gateway.example.json`，先修改其中的图片路径。
 RAG 示例：在 `rag_service/cpu_client/` 运行 `python demo.py --config config.gateway.example.json --text '示例文档片段'`。
 ASR 客户端用法见 `asr_service/cpu_client/README.md`；业务侧发送实时 PCM16 帧并并行读取识别事件。
-TTS 示例：在 `tts_service/cpu_client/` 运行 `python demo.py --config config.gateway.example.json --text '欢迎使用语音服务。'`。
+TTS 示例：在 `tts_300m_service/cpu_client/` 运行
+`python demo.py --config config.gateway.example.json --output output.wav < sentences.txt`。
 监控示例：在 `monitor_service/cpu_client/` 运行 `python demo.py --config config.json`；手动刷新增加 `--refresh`。
 CPU Web 后端负责向浏览器流式转发；在 CPU 一侧还有 NGINX 时，其流式路由也要关闭响应缓冲。
 

@@ -1,7 +1,7 @@
 openapi: 3.1.1
 info:
   title: BI-V150 算法服务接口契约
-  version: 0.8.0
+  version: 1.0.0
   description: |
     CPU Web 后端访问 GPU 主机的统一 HTTP/WebSocket 契约。所有路径共用 TLS 端口和 GPU_API_KEY。
     x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
@@ -32,7 +32,7 @@ tags:
   - name: ASR
     description: 已实现的 Fun-ASR-Nano-2512 实时 WebSocket 语音识别。
   - name: TTS
-    description: 已实现的 Fun-CosyVoice3-0.5B-2512 双向流式语音合成。
+    description: 默认由独立 CosyVoice-300M 服务提供的分段 FIFO 语音合成。
   - name: Monitor
     description: 已实现的算法状态、显存和最近 60 秒耗时快照。
 x-grpc:
@@ -55,12 +55,12 @@ x-reserved-interfaces:
   - {method: POST, path: /rag/v1/rerank, status: reserved, current_http_status: 404}
 x-source:
   repository_base_commit: c023e63
-  working_tree_change: CosyVoice3 bi-streaming TTS and five-service monitoring implementation
+  working_tree_change: dedicated default CosyVoice-300M TTS service and five-service monitoring
   gateway: ../gateway/configuration.py
   server_configuration: ../gateway/config/server.json
   rag_configuration: ../rag_service/config/server.json
   asr_configuration: ../asr_service/config/server.json
-  tts_configuration: ../tts_service/config/server.json
+  tts_configuration: ../tts_300m_service/config/server.json
   monitor_configuration: ../monitor_service/config/server.json
   vlm_configuration: ../vlm_service/config/server.json
   vlm_version: 0.17.0+corex.4.5.0.rc.11.20260701
@@ -430,7 +430,7 @@ paths:
     get:
       operationId: openTtsRealtimeSession
       tags: [TTS]
-      summary: 建立 CosyVoice3 双向流式语音合成会话
+      summary: 建立默认 CosyVoice-300M 分段 TTS 会话
       x-implementation-status: implemented
       x-websocket-contract: ./tts-websocket.md
       x-max-active-connections: 1
@@ -438,11 +438,12 @@ paths:
       x-session-idle-timeout-seconds: 3600
       description: |
         使用 WebSocket Upgrade 建立长连接。握手携带统一 Authorization Bearer key；网关将其
-        替换为 TTS 内部 key。连接固定使用 fun-cosyvoice3-0.5b-2512、aishell3-female 和
-        24000 Hz 单声道 PCM S16LE。客户端可持续发送 input.text，服务端可在 input.done 前返回
-        二进制 PCM；同一连接在 audio.done 后可顺序处理下一条 utterance。活动 utterance 可通过
-        response.cancel 取消，收到 response.cancelled 后复用连接。完整消息、状态、限制和错误语义
-        见 x-websocket-contract。OpenAPI 客户端生成器通常不能生成该双向消息协议。
+        替换为 TTS 内部 key。默认上游固定为 tts_300m_service，只加载
+        cosyvoice-300m-instruct。session.created 返回实际模型、固定音色和 PCM 参数；客户端使用
+        完整 input.segment FIFO 协议。保留的 tts_service/CosyVoice3 只有在运维显式改回网关上游时
+        才会使用增量 input.text/input.done 协议。
+        WebSocket 的 JSON 控制帧和二进制 PCM 状态机只在 x-websocket-contract 中定义，不作为
+        HTTP 请求/响应 schema。OpenAPI 客户端生成器通常不能生成该双向消息协议。
       responses:
         '101':
           description: WebSocket 协议升级成功；后续帧遵循独立消息契约。
@@ -476,9 +477,9 @@ paths:
         RAG 统计单次 HTTP 请求在 GPU 主机服务端的完整处理耗时，包含内部排队与处理。
         ASR 按每次 partial/final 解码轮次统计首文本 token 延迟：从已准备好的音频上下文提交给
         GPU 解码器，到首个文本 token 在 GPU 主机服务进程可见；不包含音频累计、VAD 等待和网络。
-        TTS 每个 utterance 统计一次首语音 token 延迟：从首批规范化文本 token 提交给 GPU 的
-        inference_bistream 开始，到首个语音 token 在 GPU 主机服务进程可见；不包含等待客户端
-        追加文本、文本队列等待、PCM 解码、网络和播放器缓冲，因此不等同于首段可播放音频。
+        默认 TTS 每个外部分段统计一次首语音 token 延迟：从第一个内部子段进入 GPU LLM 推理，
+        到首个语音 token 在服务进程可见；后续内部子段不重复记录。该指标不含 FIFO 等待、PCM
+        生成、网络和播放器缓冲，因此不等同于客户端首段可播放音频。
         avg_ms/p95_ms 均为毫秒，P95 是直方图估算；无样本或不可采集时为 null。
         启动不足 60 秒使用已有样本；累计计数器重启或采样间隔超过 12.5 秒时重新建立基线。
         快照超过 15 秒、首次采样失败或强制刷新失败时返回 503，不以旧数据冒充当前状态。

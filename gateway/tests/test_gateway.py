@@ -66,6 +66,7 @@ class GatewayTest(unittest.TestCase):
         self.tts_headers = []
         self.tts_started = threading.Event()
         self.tts_pause = False
+        self.tts_mode = "cosyvoice3"
         self.stream_mode = "normal"
         self.http_status = 200
         self.rag_status = 200
@@ -206,11 +207,29 @@ class GatewayTest(unittest.TestCase):
             return None
 
         def tts_handler(connection):
-            connection.send(json.dumps({"type": "session.created", "voice": "aishell3-female",
-                                        "audio": {"format": "pcm_s16le", "sample_rate_hz": 24000,
-                                                  "channels": 1}}))
+            segmented = fixture.tts_mode == "cosyvoice300m"
+            connection.send(json.dumps({
+                "type": "session.created",
+                "model": ("cosyvoice-300m-instruct" if segmented
+                          else "fun-cosyvoice3-0.5b-2512"),
+                "voice": "中文女" if segmented else "aishell3-female",
+                "audio": {"format": "pcm_s16le",
+                          "sample_rate_hz": 22050 if segmented else 24000,
+                          "channels": 1},
+            }))
             for message in connection:
                 event = json.loads(message)
+                if event["type"] == "input.segment":
+                    segment_id = event["segment_id"]
+                    connection.send(json.dumps({"type": "input.accepted",
+                                                "segment_id": segment_id}))
+                    connection.send(json.dumps({"type": "audio.start",
+                                                "segment_id": segment_id}))
+                    connection.send(b"\x05\x00\x06\x00")
+                    if fixture.tts_pause:
+                        fixture.release.wait(4)
+                    connection.send(json.dumps({"type": "audio.done",
+                                                "segment_id": segment_id}))
                 if event["type"] == "input.text":
                     fixture.tts_started.set()
                     connection.send(json.dumps({"type": "audio.start", "utterance_id": "utt-1"}))
@@ -542,6 +561,44 @@ class GatewayTest(unittest.TestCase):
         self.assertNotEqual(expected, "Bearer " + self.key)
         for path in ("/tts/v1/audio/speech", "/tts/v1/audio/voices", "/tts/health/ready"):
             self.assertEqual(self.http.get(path).status_code, 404)
+
+    def test_tts_websocket_passes_through_300m_segment_frames_and_replaces_key(self):
+        self.tts_mode = "cosyvoice300m"
+        self.tts_pause = True
+        with self.tts() as connection:
+            session = json.loads(connection.recv())
+            self.assertEqual(session["model"], "cosyvoice-300m-instruct")
+            self.assertEqual(session["audio"]["sample_rate_hz"], 22050)
+            segment = {"type": "input.segment", "segment_id": "seg-1", "text": "测试"}
+            connection.send(json.dumps(segment))
+            self.assertEqual(json.loads(connection.recv()), {
+                "type": "input.accepted", "segment_id": "seg-1",
+            })
+            self.assertEqual(json.loads(connection.recv()), {
+                "type": "audio.start", "segment_id": "seg-1",
+            })
+            self.assertEqual(connection.recv(), b"\x05\x00\x06\x00")
+            with self.assertRaises(InvalidStatus) as limited:
+                with self.tts():
+                    pass
+            self.assertEqual(limited.exception.response.status_code, 429)
+            self.release.set()
+            self.assertEqual(json.loads(connection.recv()), {
+                "type": "audio.done", "segment_id": "seg-1",
+            })
+
+        expected = "Bearer " + secret(self.cfg["tts"]["api_key_file"])
+        upstream_authorization = next(
+            value for name, value in self.tts_headers[-1].items()
+            if name.lower() == "authorization"
+        )
+        self.assertEqual(upstream_authorization, expected)
+        self.assertNotEqual(expected, "Bearer " + self.key)
+        rendered = (self.root / "nginx.conf").read_text()
+        start = rendered.index("location = /tts/v1/realtime")
+        end = rendered.find("location =", start + 1)
+        tts_location = rendered[start:end]
+        self.assertIn("proxy_buffering off;", tts_location)
 
     def test_monitor_snapshot_forwards_refresh_and_replaces_public_credential(self):
         response = self.http.get("/monitor/v1/overview?refresh=true")
