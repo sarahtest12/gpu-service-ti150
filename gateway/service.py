@@ -15,7 +15,7 @@ import sys
 import time
 import urllib.request
 
-from configuration import load, render, secret
+from configuration import TTS_PROJECTS, load, render, secret
 
 
 ROOT = Path(__file__).resolve().parent
@@ -26,7 +26,6 @@ SERVICE_PROJECTS = {
     "vlm": "vlm_service",
     "rag": "rag_service",
     "asr": "asr_service",
-    "tts": "tts_300m_service",
 }
 
 
@@ -102,7 +101,13 @@ def command_for(name, cfg):
     if name in ("vlm", "rag", "asr", "tts"):
         if name not in cfg:
             raise ValueError(f"{name} is not configured")
-        project = REPO / SERVICE_PROJECTS[name]
+        if name == "tts":
+            project_name = cfg[name].get("project")
+            if project_name not in TTS_PROJECTS:
+                raise ValueError("tts.project must select a supported local TTS service")
+        else:
+            project_name = SERVICE_PROJECTS[name]
+        project = REPO / project_name
         local = json.loads((project / "config/server.json").read_text())
         host = f"[{local['host']}]" if ":" in local["host"] else local["host"]
         if f"{host}:{local['port']}" != cfg[name]["address"]:

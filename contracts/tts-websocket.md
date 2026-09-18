@@ -6,17 +6,19 @@ key 后，用 TTS 内部 key 访问 `127.0.0.1:8004/realtime`，不会把公开 
 成功握手为 HTTP 101；错误公开 key 返回 401，已有连接占用唯一并发槽时返回 429。服务重启时
 新握手可能返回 502 或 504；客户端应等待健康恢复后为后续新回复重新连接。
 
-网关默认将该路径映射到独立的 `tts_300m_service`。原 `tts_service` 的 CosyVoice3 保留为可选
-部署；运维显式更改上游时仍使用同一路径。连接不能动态选择或切换模型：
+网关默认将该路径映射到独立的 `tts_300m_sft_service`。`tts_300m_service` 的
+CosyVoice-300M-Instruct 和原 `tts_service` 的 CosyVoice3 均保留为可选部署；运维通过
+`gateway/config/server.json` 的 `tts.project` 切换上游。连接不能动态选择或切换模型：
 
 | `session.created.model` | 固定音色 | PCM |
 | --- | --- | --- |
 | `fun-cosyvoice3-0.5b-2512` | `aishell3-female` | 24000 Hz、单声道、little-endian `pcm_s16le` |
 | `cosyvoice-300m-instruct` | `中文女` | 22050 Hz、单声道、little-endian `pcm_s16le` |
+| `cosyvoice-300m-sft` | `中文女` | 22050 Hz、单声道、little-endian `pcm_s16le` |
 
 客户端不能传模型、音色、参考音频、指令或速度。CosyVoice3 的固定参考音色来自 AISHELL-3
-Apache-2.0 女声 SSB0005；300M 固定使用 `中文女`、英文 instruction
-`Speak in a natural, clear, and neutral tone.` 和随机种子 42。300M 在分段前对阿拉伯数字执行
+Apache-2.0 女声 SSB0005；300M-SFT 固定使用 `中文女` 和随机种子 42，不使用 instruction。
+300M-Instruct 固定使用相同音色、英文 instruction 和随机种子 42。两个 300M 服务在分段前都对阿拉伯数字执行
 中文文本规范化；日期、金额、小数和百分比等按上下文展开，纯数字或英文混合文本也不会进入
 英文数字读法。
 
@@ -28,7 +30,7 @@ Apache-2.0 女声 SSB0005；300M 固定使用 `中文女`、英文 instruction
 {
   "type": "session.created",
   "session_id": "tts_0123456789abcdef01234567",
-  "model": "cosyvoice-300m-instruct",
+  "model": "cosyvoice-300m-sft",
   "voice": "中文女",
   "audio": {
     "format": "pcm_s16le",
@@ -115,7 +117,7 @@ stateDiagram-v2
     Idle --> [*]: session.close
 ```
 
-## CosyVoice-300M-Instruct 分段 FIFO 协议
+## CosyVoice-300M-SFT / Instruct 分段 FIFO 协议
 
 CPU 每得到一个完整分段就发送：
 
@@ -247,11 +249,11 @@ segment，只应在服务恢复后为新回复重连。
 ## 监控口径
 
 两个保留服务都发布同名直方图 `tts_time_to_first_token_seconds`，每个外部工作单位最多记录一次；
-网关默认采集 300M：
+网关采集当前所选 TTS：
 
 - CosyVoice3：从 `inference_bistream` 开始消费首批规范化文本 token，到首个语音 token 在 GPU
   服务进程可见。
-- 300M：从第一个内部子段进入 LLM 推理，到该子段的首个语音 token 在 GPU 服务进程可见；后续
+- 300M-SFT / Instruct：从第一个内部子段进入 LLM 推理，到该子段的首个语音 token 在 GPU 服务进程可见；后续
   内部子段不重复记录。
 
 两者都排除队列等待、网络传输、PCM 播放和客户端缓冲。内部 `/health` 与 `/metrics` 使用 TTS

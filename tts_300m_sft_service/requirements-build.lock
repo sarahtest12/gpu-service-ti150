@@ -1,0 +1,3 @@
+# Python 3.10 / x86_64 service-local packages; vendor CoreX packages come from the base image.
+Cython==3.3.0 \
+    --hash=sha256:eda47eb7731c3b41180b58bb83de423f43aa58a677677e3390e8d332b003859e

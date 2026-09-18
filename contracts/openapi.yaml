@@ -1,7 +1,7 @@
 openapi: 3.1.1
 info:
   title: BI-V150 算法服务接口契约
-  version: 1.0.0
+  version: 1.1.0
   description: |
     CPU Web 后端访问 GPU 主机的统一 HTTP/WebSocket 契约。所有路径共用 TLS 端口和 GPU_API_KEY。
     x-implementation-status=implemented 表示当前代码已实现，不代表服务当前已启动。
@@ -32,7 +32,7 @@ tags:
   - name: ASR
     description: 已实现的 Fun-ASR-Nano-2512 实时 WebSocket 语音识别。
   - name: TTS
-    description: 默认由独立 CosyVoice-300M 服务提供的分段 FIFO 语音合成。
+    description: 默认由独立 CosyVoice-300M-SFT 服务提供的分段 FIFO 语音合成。
   - name: Monitor
     description: 已实现的算法状态、显存和最近 60 秒耗时快照。
 x-grpc:
@@ -55,12 +55,13 @@ x-reserved-interfaces:
   - {method: POST, path: /rag/v1/rerank, status: reserved, current_http_status: 404}
 x-source:
   repository_base_commit: c023e63
-  working_tree_change: dedicated default CosyVoice-300M TTS service and five-service monitoring
+  working_tree_change: selectable TTS project with CosyVoice-300M-SFT as the default
   gateway: ../gateway/configuration.py
   server_configuration: ../gateway/config/server.json
   rag_configuration: ../rag_service/config/server.json
   asr_configuration: ../asr_service/config/server.json
-  tts_configuration: ../tts_300m_service/config/server.json
+  tts_configuration: ../tts_300m_sft_service/config/server.json
+  tts_alternate_configuration: ../tts_300m_service/config/server.json
   monitor_configuration: ../monitor_service/config/server.json
   vlm_configuration: ../vlm_service/config/server.json
   vlm_version: 0.17.0+corex.4.5.0.rc.11.20260701
@@ -430,7 +431,7 @@ paths:
     get:
       operationId: openTtsRealtimeSession
       tags: [TTS]
-      summary: 建立默认 CosyVoice-300M 分段 TTS 会话
+      summary: 建立默认 CosyVoice-300M-SFT 分段 TTS 会话
       x-implementation-status: implemented
       x-websocket-contract: ./tts-websocket.md
       x-max-active-connections: 1
@@ -438,12 +439,12 @@ paths:
       x-session-idle-timeout-seconds: 3600
       description: |
         使用 WebSocket Upgrade 建立长连接。握手携带统一 Authorization Bearer key；网关将其
-        替换为 TTS 内部 key。默认上游固定为 tts_300m_service，只加载
-        cosyvoice-300m-instruct，以 Instruct 模式固定使用中文女声、英文 instruction 和随机种子，
-        不接收客户端音色或 instruction 参数。阿拉伯数字在服务端按中文上下文规范化。
+        替换为 TTS 内部 key。默认上游为 tts_300m_sft_service，只加载
+        cosyvoice-300m-sft，以 SFT 模式固定使用中文女声和随机种子，不接收客户端模型、音色、
+        instruction 或速度参数。阿拉伯数字在服务端按中文上下文规范化。
         session.created 返回实际模型、固定音色和 PCM 参数；客户端使用完整 input.segment FIFO 协议。
-        保留的 tts_service/CosyVoice3 只有在运维显式改回网关上游时才会使用增量
-        input.text/input.done 协议。
+        保留的 tts_300m_service/CosyVoice-300M-Instruct 使用同一分段协议；tts_service/CosyVoice3
+        只有在运维显式切换网关项目时才会使用增量 input.text/input.done 协议。
         WebSocket 的 JSON 控制帧和二进制 PCM 状态机只在 x-websocket-contract 中定义，不作为
         HTTP 请求/响应 schema。OpenAPI 客户端生成器通常不能生成该双向消息协议。
       responses:

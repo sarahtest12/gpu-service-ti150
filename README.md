@@ -14,7 +14,7 @@ CPU 服务器部署 Web 应用与业务逻辑，GPU 主机通过统一 HTTPS 入
 | RAG 文本向量 | `/rag/v1/embeddings`，模型 `bge-m3` | `127.0.0.1:8002` |
 | RAG 模型列表 | `/rag/v1/models` | 同上 |
 | ASR 实时语音识别 | `wss://GPU_HOST:8443/asr/v1/realtime`，模型 `Fun-ASR-Nano-2512` | `127.0.0.1:8003` |
-| TTS 流式语音合成 | `wss://GPU_HOST:8443/tts/v1/realtime`，默认 `CosyVoice-300M-Instruct` 分段 FIFO | `127.0.0.1:8004` |
+| TTS 流式语音合成 | `wss://GPU_HOST:8443/tts/v1/realtime`，默认 `CosyVoice-300M-SFT` 分段 FIFO | `127.0.0.1:8004` |
 | 性能监控快照 | `/monitor/v1/overview` | `127.0.0.1:8005` |
 | 服务状态 | `/health/live`、VLM/YOLO/RAG/ASR 就绪路径及 `/monitor/v1/overview` | TTS 由监控读取内部健康状态 |
 
@@ -22,13 +22,13 @@ CPU 服务器部署 Web 应用与业务逻辑，GPU 主机通过统一 HTTPS 入
 文档分块、向量库、召回和权限由 CPU 项目实现。YOLO 保留原有 gRPC 契约；ASR 只提供实时
 WebSocket，不提供完整文件转写接口。默认 TTS 接收 CPU 断好的分段并按 FIFO 合成，返回
 22050 Hz 单声道 PCM S16LE；原 `tts_service` 的 CosyVoice3 双流实现保留，但网关默认启动独立的
-`tts_300m_service`。普通 HTTP 单图接口和
+`tts_300m_sft_service`。普通 HTTP 单图接口和
 `/rag/v1/rerank` 尚未实现，当前返回 404。
 
 ## 部署与管理
 
 1. 按 [网关说明](gateway/README.md) 构建 NGINX、配置证书和初始化凭据。
-2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md)、[ASR 说明](asr_service/README.md)、[默认 TTS 说明](tts_300m_service/README.md) 和 [监控说明](monitor_service/README.md) 准备各自服务。
+2. 按 [YOLO 说明](yolov5v70-service/README.md)、[VLM 说明](vlm_service/README.md)、[RAG 说明](rag_service/README.md)、[ASR 说明](asr_service/README.md)、[默认 TTS 说明](tts_300m_sft_service/README.md) 和 [监控说明](monitor_service/README.md) 准备各自服务。
 3. 从仓库根目录统一管理网关、五个算法服务和监控，共七个独立进程组：
 
 ```bash

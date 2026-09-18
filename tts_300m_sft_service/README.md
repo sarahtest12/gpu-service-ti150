@@ -1,17 +1,17 @@
-# CosyVoice-300M TTS 服务
+# CosyVoice-300M-SFT TTS 服务
 
-该目录独立部署 `CosyVoice-300M-Instruct`，作为统一网关的可选 TTS 上游保留。当前默认上游是
-[`tts_300m_sft_service`](../tts_300m_sft_service/README.md)，原 [`tts_service`](../tts_service/README.md)
-保留 Fun-CosyVoice3 双流服务。三个目录的代码与凭据互不混用；它们都监听 `127.0.0.1:8004`，
-因此只能启动其中一个。
+该目录独立部署 `CosyVoice-300M-SFT`，是统一网关当前默认的 TTS 上游。
+[`tts_300m_service`](../tts_300m_service/README.md) 保留 CosyVoice-300M-Instruct，
+[`tts_service`](../tts_service/README.md) 保留 Fun-CosyVoice3。三个目录的代码、环境和内部凭据
+互不混用；它们都监听 `127.0.0.1:8004`，因此只能启动其中一个。
 
 公开入口保持不变：
 
 - `wss://GPU_HOST:8443/tts/v1/realtime`
 - 请求头：`Authorization: Bearer <GPU_API_KEY>`
-- 固定模型：`cosyvoice-300m-instruct`
+- 固定模型：`cosyvoice-300m-sft`
 - 固定音色：`中文女`
-- 固定模式：Instruct；服务端使用英文 instruction 和固定随机种子，客户端不能修改
+- 固定模式：SFT；使用 checkpoint 的固定 speaker embedding 和随机种子 42，不使用 instruction
 - 数字读法：阿拉伯数字统一经过中文文本规范化；日期、金额、小数、百分比等按中文上下文展开
 - 输出：22050 Hz、单声道、little-endian PCM S16LE
 
@@ -22,7 +22,7 @@ CPU 端先断句，然后可在前一段仍在合成时继续发送完整分段�
 
 配置在 [`config/server.json`](config/server.json)，固定使用 BI150 已提供的：
 
-- 模型：`/share/fshare/common/models/CosyVoice/CosyVoice-300M-Instruct`
+- 模型：`/share/fshare/common/models/CosyVoice/CosyVoice-300M-SFT`
 - 源码：`/root/llm-infer/transformers/audio/CosyVoice-300M-Instruct/CosyVoice`
 - CoreX PyTorch 2.7.1、FP16、JIT；关闭 ONNX
 
@@ -31,13 +31,12 @@ CPU 端先断句，然后可在前一段仍在合成时继续发送完整分段�
 恢复。
 
 ```bash
-bash tts_300m_service/scripts/bootstrap.sh
-tts_300m_service/.venv/bin/python tts_300m_service/scripts/service.py check
-tts_300m_service/.venv/bin/python tts_300m_service/scripts/service.py init-key
+bash tts_300m_sft_service/scripts/bootstrap.sh
+tts_300m_sft_service/.venv/bin/python tts_300m_sft_service/scripts/service.py check
+tts_300m_sft_service/.venv/bin/python tts_300m_sft_service/scripts/service.py init-key
 ```
 
-将 `gateway/config/server.json` 的 `tts.project` 与 `tts.api_key_file` 切换到该目录后，网关管理器
-可将 `tts` 映射到该服务：
+网关配置的 `tts.project` 默认选择该目录，管理器据此启动服务：
 
 ```bash
 python3 gateway/service.py stop --service tts
@@ -46,7 +45,7 @@ python3 gateway/service.py status --service tts
 ```
 
 `ready: true` 才表示模型已加载。内部 `/health`、`/metrics` 和 `/realtime` 只监听 loopback，并使用
-`tts_300m_service/runtime/api_key`；CPU 服务器只使用统一公开 `GPU_API_KEY`。
+`tts_300m_sft_service/runtime/api_key`；CPU 服务器只使用统一公开 `GPU_API_KEY`。
 如果该内部 key 相比当前运行配置发生变化，还要重启监控并重载网关，使两个进程重新读取 key：
 
 ```bash
@@ -63,7 +62,7 @@ python3 gateway/service.py reload --service gateway
 {
   "type": "session.created",
   "session_id": "tts_...",
-  "model": "cosyvoice-300m-instruct",
+  "model": "cosyvoice-300m-sft",
   "voice": "中文女",
   "audio": {"format": "pcm_s16le", "sample_rate_hz": 22050, "channels": 1}
 }
@@ -99,16 +98,16 @@ GPU_API_KEY='统一公开key' python cpu_client/demo.py \
 ## 验证
 
 ```bash
-PYTHONPATH="$PWD/tts_300m_service/.venv/lib/python3.10/site-packages:/usr/local/corex/lib64/python3/dist-packages" \
-  tts_300m_service/.venv/bin/python -m unittest discover \
-  -s tts_300m_service/tests -p 'test_*.py' -v
+PYTHONPATH="$PWD/tts_300m_sft_service/.venv/lib/python3.10/site-packages:/usr/local/corex/lib64/python3/dist-packages" \
+  tts_300m_sft_service/.venv/bin/python -m unittest discover \
+  -s tts_300m_sft_service/tests -p 'test_*.py' -v
 ```
 
 停止常驻 TTS 后可运行直接 GPU 基准：
 
 ```bash
-tts_300m_service/.venv/bin/python tts_300m_service/scripts/validate_segments.py \
-  --output tts_300m_service/runtime/validation-segments.pcm
+tts_300m_sft_service/.venv/bin/python tts_300m_sft_service/scripts/validate_segments.py \
+  --output tts_300m_sft_service/runtime/validation-segments.pcm
 ```
 
 真实测试记录见 [`docs/validation.md`](docs/validation.md)。

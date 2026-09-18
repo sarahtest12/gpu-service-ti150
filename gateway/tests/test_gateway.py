@@ -207,10 +207,11 @@ class GatewayTest(unittest.TestCase):
             return None
 
         def tts_handler(connection):
-            segmented = fixture.tts_mode == "cosyvoice300m"
+            segmented = fixture.tts_mode in ("cosyvoice300m", "cosyvoice300msft")
             connection.send(json.dumps({
                 "type": "session.created",
-                "model": ("cosyvoice-300m-instruct" if segmented
+                "model": ("cosyvoice-300m-sft" if fixture.tts_mode == "cosyvoice300msft"
+                          else "cosyvoice-300m-instruct" if segmented
                           else "fun-cosyvoice3-0.5b-2512"),
                 "voice": "中文女" if segmented else "aishell3-female",
                 "audio": {"format": "pcm_s16le",
@@ -563,11 +564,11 @@ class GatewayTest(unittest.TestCase):
             self.assertEqual(self.http.get(path).status_code, 404)
 
     def test_tts_websocket_passes_through_300m_segment_frames_and_replaces_key(self):
-        self.tts_mode = "cosyvoice300m"
+        self.tts_mode = "cosyvoice300msft"
         self.tts_pause = True
         with self.tts() as connection:
             session = json.loads(connection.recv())
-            self.assertEqual(session["model"], "cosyvoice-300m-instruct")
+            self.assertEqual(session["model"], "cosyvoice-300m-sft")
             self.assertEqual(session["audio"]["sample_rate_hz"], 22050)
             segment = {"type": "input.segment", "segment_id": "seg-1", "text": "测试"}
             connection.send(json.dumps(segment))

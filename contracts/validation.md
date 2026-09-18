@@ -188,3 +188,29 @@ key 均为 200，旧 key 均为 401。重启 monitor 使其重新读取配置后
 详细的 GPU 基线、FIFO、取消和复用结果见
 [`tts_300m_service/docs/validation.md`](../tts_300m_service/docs/validation.md)。所有延迟只描述本机验收，
 不是服务等级承诺；公共监控仍只返回最近 60 秒 GPU 首 token 指标。
+
+## CosyVoice-300M-SFT 默认服务（2026-09-18）
+
+TTS 契约版本升为 `1.1.0`。公开入口仍为 `WSS /tts/v1/realtime`，输入、FIFO、取消和 PCM 帧协议
+不变；默认 `session.created.model` 改为 `cosyvoice-300m-sft`。SFT 固定使用 checkpoint 的
+`中文女`，不接收、不保存也不注入 instruction。保留的 CosyVoice-300M-Instruct 使用同一分段
+协议，Fun-CosyVoice3 继续使用增量文本协议；连接建立后不能动态切换模型。
+
+网关新增显式 `tts.project`，只允许三个本地 TTS 目录，并核对所选目录的监听地址和内部 key。
+当前默认选择 `tts_300m_sft_service`；三个后端共用 8004，运维一次只运行一个。切换时必须先停止
+当前 TTS，同时修改项目和 key 路径，启动目标服务、重启 monitor，并 reload 网关。
+
+| 校验 | 结果 |
+| --- | --- |
+| SFT 服务、状态机、取消与 CPU 客户端 | 54 项通过 |
+| Instruct 与 CosyVoice3 回归 | 各 54 项通过 |
+| 网关项目选择、TLS/WebSocket 与路由 | 共 22 项：18 项通过，4 项显式真机集成测试跳过 |
+| 监控测试 / OpenAPI 3.1.1 | 6 项通过 / 通过 |
+| 真实公开 WSS、数字读法、取消、日志脱敏 | 通过 |
+| 当前运行状态 | 七个进程组均为 `managed: true`、`ready: true` |
+
+真实数字文本经本机 ASR 复核为中文读法。同一长句两次输出的 CAMPPlus speaker embedding 余弦
+相似度为 0.932209；这验证固定 SFT speaker 的部署路径，不承诺波形确定性。最新短句后的强制监控
+快照中 TTS 为 `running`、2254.438 MB，最近 60 秒 GPU 首 token 平均 26.742 ms、P95 39 ms。
+完整真机结果见
+[`tts_300m_sft_service/docs/validation.md`](../tts_300m_sft_service/docs/validation.md)。

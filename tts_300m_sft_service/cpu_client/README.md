@@ -1,4 +1,4 @@
-# CosyVoice-300M CPU 客户端
+# CosyVoice-300M-SFT CPU 客户端
 
 该目录可独立复制到 CPU Web 后端，不依赖 GPU、CoreX 或 torch。客户端通过统一网关
 `WSS /tts/v1/realtime` 和公开 `GPU_API_KEY` 建立长连接，握手必须返回：
@@ -51,7 +51,7 @@ with TtsRealtimeClient(
     api_key=os.environ["GPU_API_KEY"],
     ca_file="/path/to/server.crt",
 ) as client:
-    assert client.session["model"] == "cosyvoice-300m-instruct"
+    assert client.session["model"] == "cosyvoice-300m-sft"
     configure_browser_audio(**client.session["audio"])
 
     def produce():

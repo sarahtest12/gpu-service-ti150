@@ -150,6 +150,20 @@ YOLO 独立虚拟环境已建立，官方 v7.0 权重下载后通过仓库指定
 RAG rerank 与 YOLO HTTP 单图路由尚未实现，当前不会伪装成可用服务。
 ASR 仅部署实时 WebSocket，不提供完整文件转写路由。
 
+## CosyVoice-300M-SFT 默认上游
+
+2026-09-18 新增独立 `tts_300m_sft_service`，网关配置通过受限的 `tts.project` 选择 TTS 目录，
+默认项目和内部 key 均已切到 SFT 服务。管理器会核对所选目录的监听地址和 key，拒绝路径穿越或
+未列入允许清单的项目。CosyVoice-300M-Instruct 和 Fun-CosyVoice3 目录继续保留；三套服务共用
+127.0.0.1:8004，当前只有 SFT 运行。
+
+网关共运行 22 项测试，其中 18 项通过，4 项需要显式启用的真机集成测试按默认设置跳过。真实统一入口返回
+`cosyvoice-300m-sft`、固定 `中文女` 和 22050 Hz PCM；FIFO、活动段取消、连接复用、公开 key 到
+SFT 内部 key 的替换均通过。切换后重启 monitor 并 reload 网关，七个进程组全部恢复
+`managed: true`、`ready: true`。最新短句后的公开监控快照中 TTS 为 `running`、2254.438 MB，
+最近 60 秒 GPU 首 token 平均 26.742 ms、P95 39 ms。详细结果见
+[`../../tts_300m_sft_service/docs/validation.md`](../../tts_300m_sft_service/docs/validation.md)。
+
 ## Fun-CosyVoice3 双向流式路由验收
 
 2026-09-17 网关将 TTS 公共入口替换为 `WSS /tts/v1/realtime`。真实 NGINX/TLS 测试桩验证了

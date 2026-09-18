@@ -14,7 +14,7 @@ import tts_client
 SESSION = json.dumps({
     "type": "session.created",
     "session_id": "tts_test",
-    "model": "cosyvoice-300m-instruct",
+    "model": "cosyvoice-300m-sft",
     "voice": "中文女",
     "audio": {"format": "pcm_s16le", "sample_rate_hz": 22050, "channels": 1},
 }, ensure_ascii=False)
@@ -66,11 +66,11 @@ class TtsRealtimeClientTest(unittest.TestCase):
                 client.connect()
         self.assertTrue(connection.closed)
 
-    def test_accepts_the_sft_backend_with_the_same_segment_protocol(self):
+    def test_accepts_the_instruct_backend_with_the_same_segment_protocol(self):
         alternate = json.loads(SESSION)
-        alternate["model"] = "cosyvoice-300m-sft"
+        alternate["model"] = "cosyvoice-300m-instruct"
         client, _ = self.connect([], json.dumps(alternate, ensure_ascii=False))
-        self.assertEqual(client.session["model"], "cosyvoice-300m-sft")
+        self.assertEqual(client.session["model"], "cosyvoice-300m-instruct")
 
     def test_correlates_fifo_audio_frames(self):
         client, connection = self.connect([

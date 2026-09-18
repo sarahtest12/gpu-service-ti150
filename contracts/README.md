@@ -1,8 +1,8 @@
 # 算法服务契约
 
 初始 VLM/YOLO 契约基线为 `88bb84a`（add gateway）。随后已部署 BGE-M3、Fun-ASR-Nano-2512
-和 Fun-CosyVoice3-0.5B-2512；统一网关当前默认使用独立的 CosyVoice-300M-Instruct 服务，原
-CosyVoice3 目录保留为可选部署。
+和 Fun-CosyVoice3-0.5B-2512；统一网关当前默认使用独立的 CosyVoice-300M-SFT 服务，
+CosyVoice-300M-Instruct 与 CosyVoice3 目录保留为可选部署。
 五路算法的监控快照已经实现；重排序模型暂不部署。
 
 优先 review [`openapi.yaml`](openapi.yaml)。它是可导入 OpenAPI 工具的 **3.1.1** 单文件，
@@ -30,7 +30,7 @@ TTS 的握手在 OpenAPI 中，文本、PCM 与状态机见 [`tts-websocket.md`]
 | HTTP POST | `/rag/v1/rerank` | 检索重排 | 预留路径，当前 404 |
 | WebSocket | `/asr/v1/realtime` | Fun-ASR-Nano 实时语音识别 | 已实现；消息契约单列 |
 | HTTP GET | `/asr/health/ready` | ASR 引擎就绪 | 已实现 |
-| WebSocket | `/tts/v1/realtime` | 默认 CosyVoice-300M 分段 FIFO 与 PCM 输出 | 已实现；消息契约单列 |
+| WebSocket | `/tts/v1/realtime` | 默认 CosyVoice-300M-SFT 分段 FIFO 与 PCM 输出 | 已实现；消息契约单列 |
 
 RAG rerank 记录在 OpenAPI 的 `x-reserved-interfaces`，没有加入可调用的 `paths`。
 YOLO 普通 HTTP 单图接口也尚未定义。监控的 RAG 耗时只覆盖现有 embedding 请求，不代表 rerank 已部署。
@@ -131,16 +131,17 @@ CPU 建议批次不超过 16 段，这是使用建议；服务实际硬限制为
 
 ## TTS 契约说明
 
-TTS 使用一个 `WSS /tts/v1/realtime`。默认 `tts_300m_service` 使用 `input.segment`、
+TTS 使用一个 `WSS /tts/v1/realtime`。默认 `tts_300m_sft_service` 使用 `input.segment`、
 `input.accepted` 和有界 FIFO，CPU 可在当前段合成时继续提交后续段。`session.created` 固定返回
-CosyVoice-300M、`中文女` 和 22050 Hz PCM 参数。原 `tts_service` 的 CosyVoice3 增量协议仍在
+CosyVoice-300M-SFT、`中文女` 和 22050 Hz PCM 参数。`tts_300m_service` 使用相同分段协议，原
+`tts_service` 的 CosyVoice3 增量协议仍在
 消息契约中保留，但不再是网关默认上游。完整消息、状态、错误和限制见
 [`tts-websocket.md`](tts-websocket.md)。
 
 服务与网关各限制 1 个活跃 WebSocket。客户端断开后服务端取消文本输入并清理厂商生成器；清理
 完成前新握手仍可能返回 429。默认部署与真实样本见
-[`../tts_300m_service/README.md`](../tts_300m_service/README.md) 和
-[`../tts_300m_service/docs/validation.md`](../tts_300m_service/docs/validation.md)。
+[`../tts_300m_sft_service/README.md`](../tts_300m_sft_service/README.md) 和
+[`../tts_300m_sft_service/docs/validation.md`](../tts_300m_sft_service/docs/validation.md)。
 
 ## 内部接口范围
 

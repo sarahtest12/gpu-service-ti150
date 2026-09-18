@@ -9,6 +9,13 @@ import re
 import secrets
 
 
+TTS_PROJECTS = {
+    "tts_service",
+    "tts_300m_service",
+    "tts_300m_sft_service",
+}
+
+
 def secret(path, *, create=False):
     path = Path(path)
     if create and not path.exists():
@@ -40,6 +47,8 @@ def load(path):
     names = ["vlm", "yolo"] + [name for name in ("rag", "asr", "tts", "monitor") if name in cfg]
     for name in names:
         route = cfg[name]
+        if name == "tts" and route.get("project") not in TTS_PROJECTS:
+            raise ValueError("tts.project must select a supported local TTS service")
         address(route["address"])
         route["api_key_file"] = (path.parent / route["api_key_file"]).resolve()
         positive(route, "max_connections", 1024)
